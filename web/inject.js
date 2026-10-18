@@ -54,7 +54,18 @@ function pickText(d){
   var t = p.map(function(x){ return x && typeof x.text === 'string' && !x.thought ? x.text : ''; }).join('');
   if(t) return t;
   var ch = Array.isArray(d.choices) ? d.choices[0] : null;
-  return ch && ch.message && typeof ch.message.content === 'string' ? ch.message.content : '';
+  var mc = ch && ch.message ? ch.message.content : null;
+  if(typeof mc === 'string') return mc;
+  // Некоторые API отдают content массивом частей
+  if(Array.isArray(mc)) return mc.map(function(x){ return typeof x === 'string' ? x : x && typeof x.text === 'string' ? x.text : ''; }).join('');
+  return '';
+}
+// Почему ответ пустой: отказ модели, фильтр, обрыв по длине — показываем как есть
+function whyEmpty(d, raw){
+  var ch = d && Array.isArray(d.choices) ? d.choices[0] : null;
+  if(ch && ch.message && ch.message.refusal) return 'отказ модели: ' + short(ch.message.refusal);
+  if(ch && ch.finish_reason && ch.finish_reason !== 'stop') return 'пустой ответ (finish_reason=' + ch.finish_reason + ')';
+  return 'пустой ответ: ' + short(raw);
 }
 function pickError(d){
   if(!d || typeof d !== 'object') return '';
@@ -146,7 +157,7 @@ async function getModels(key){
 // Запрос через воркер Cloudflare (нужен для DeepSeek и как запасной путь)
 async function callProxy(key, parts){
   var proxy = localStorage.getItem('ai_proxy') || DEFAULT_PROXY;
-  tick();
+  tick('DeepSeek');
   var resp = await tfetch(proxy + '?key=' + encodeURIComponent(key), {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
@@ -168,10 +179,10 @@ async function callGemini(key, model, parts){
     contents: [{ role: 'user', parts: parts }],
     generationConfig: gemma ? { temperature: 0.1 } : { responseMimeType: 'application/json', temperature: 0.1 }
   };
-  tick();
+  tick('Gemini ' + model);
   var r = await tfetch('https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + encodeURIComponent(key), {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
-  }, 75000);
+  }, 45000);
   var raw = await r.text(), d = null;
   try { d = JSON.parse(raw); } catch(e){}
   var err = pickError(d) || (r.ok ? '' : 'HTTP ' + r.status + ': ' + short(raw));
@@ -234,8 +245,26 @@ function nativeFetch(url, opts, ms){
   });
 }
 // Счётчик попыток на кнопке: видно, что работа идёт
-var progressBtn = null, progressN = 0;
-function tick(){ progressN++; if(progressBtn) progressBtn.textContent = '…' + progressN; }
+var progressBtn = null, progressN = 0, deadlineAt = 0;
+// Маленькая серая строка над кнопками: какая модель сейчас думает и что ответил сервер
+function status(t){
+  var el = document.getElementById('m-ai-status');
+  if(!el){
+    el = document.createElement('div');
+    el.id = 'm-ai-status';
+    el.style = 'position:fixed;bottom:56px;left:50%;transform:translateX(-50%);z-index:2147483647;max-width:92vw;font:11px sans-serif;color:#888;background:rgba(255,255,255,0.85);padding:1px 6px;border-radius:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none;';
+    document.body.appendChild(el);
+  }
+  el.textContent = t || '';
+  el.style.display = t ? 'block' : 'none';
+}
+function sleep(ms){ return new Promise(function(r){ setTimeout(r, ms); }); }
+function tick(label){
+  if(deadlineAt && Date.now() > deadlineAt) throw new Error('время вышло (2 мин)');
+  progressN++;
+  if(progressBtn) progressBtn.textContent = '…' + progressN;
+  if(label) status(label + '…');
+}
 
 // Тип ключа по префиксу
 function provider(key){
@@ -312,20 +341,20 @@ async function callOai(prov, key, model, parts, useImg){
   }) : partsToText(parts);
   var headers = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key };
   if(prov === 'openrouter') headers['X-Title'] = 'InfoDa';
-  tick();
+  tick(OAI[prov].name + ' ' + model);
   var r = await httpFor(OAI[prov])(OAI[prov].base + '/chat/completions', {
     method: 'POST', headers: headers,
     body: JSON.stringify({ model: model, messages: [{ role: 'user', content: content }], temperature: 0.1 })
-  }, 75000);
+  }, 45000);
   var raw = await r.text(), d = null;
   try { d = JSON.parse(raw); } catch(e){}
   var err = pickError(d) || (r.ok ? '' : 'HTTP ' + r.status + ': ' + short(raw));
   var text = err ? '' : pickText(d);
-  if(!err && !text) err = 'пустой ответ';
+  if(!err && !text) err = whyEmpty(d, raw);
   return { status: r.status, text: text, error: err };
 }
 async function askOai(prov, key, parts, accept){
-  var P = OAI[prov], tag = keyTag(key), list = await getOaiModels(prov, key);
+  var P = OAI[prov], tag = keyTag(key), list = (await getOaiModels(prov, key)).map(function(m){ return { id: m.id, vision: m.vision }; });
   var hasImg = parts.some(function(p){ return p.inlineData; });
   var tries = 0, limited = [], other = [], blind = 0;
   for(var i = 0; i < list.length && tries < 6; i++){
@@ -349,7 +378,11 @@ async function askOai(prov, key, parts, accept){
     if(hasImg && r.status === 400 && /image|vision|multimodal/i.test(r.error)){ block(tag, m.id, '', 7 * 86400e3); continue; }
     var msg = r.error;
     if(/free-models-per-day/i.test(msg)){ block(tag, '*', '', 6 * 3600e3); limited.push('дневной лимит бесплатных моделей'); break; }
-    if(r.status === 429 || /quota|rate limit|exhausted/i.test(msg)){ block(tag, m.id, msg); limited.push(m.id); continue; }
+    status(m.id + ': ' + short(msg));
+    if(r.status === 429 || /quota|rate limit|exhausted/i.test(msg)){
+      if(!/retry in|per day|daily|free-models/i.test(msg) && !m.retried){ m.retried = true; await sleep(2500); i--; tries--; continue; }
+      block(tag, m.id, msg, 120e3); limited.push(m.id); continue;
+    }
     if(r.status === 404 || /not found|does not exist|decommission|deprecat|not supported/i.test(msg)){ block(tag, m.id, '', 86400e3); continue; }
     if(r.status === 401 || r.status === 403 || /invalid api key|unauthori|no auth|api key/i.test(msg)){ block(tag, '*', '', 600e3); other.push('ключ не принят: ' + short(msg)); break; }
     other.push(m.id + ': ' + short(msg));
@@ -381,7 +414,7 @@ async function askAI(keys, parts, accept){
       try { return await askOai(prov, key, parts, accept); } catch(e){ errors.push(name + ' (' + OAI[prov].name + '): ' + short(e.message)); }
       continue;
     }
-    var models = await getModels(key), tries = 0, limited = [], other = [];
+    var models = await getModels(key), tries = 0, limited = [], other = [], retried = {};
     for(var mi = 0; mi < models.length && tries < 8; mi++){
       var model = models[mi];
       if(isBlocked(tag, model)){ limited.push(model); continue; }
@@ -400,7 +433,11 @@ async function askAI(keys, parts, accept){
         continue;
       }
       var msg = r.error;
-      if(r.status === 429 || /quota|exhausted|rate limit/i.test(msg)){ block(tag, model, msg); limited.push(model); continue; }
+      status(model + ': ' + short(msg));
+      if(r.status === 429 || /quota|exhausted|rate limit/i.test(msg)){
+        if(!/retry in|per day|daily/i.test(msg) && !retried[model]){ retried[model] = true; await sleep(2500); mi--; tries--; continue; }
+        block(tag, model, msg, 120e3); limited.push(model); continue;
+      }
       if(r.status === 404 || /not found|deprecat|no longer|not supported|update your code/i.test(msg)){ block(tag, model, '', 86400e3); continue; }
       if(r.status === 401 || r.status === 403 || /api key|api_key|permission/i.test(msg)){ block(tag, '*', '', 600e3); other.push('ключ не принят: ' + short(msg)); break; }
       other.push(model + ': ' + short(msg));
@@ -471,7 +508,7 @@ async function runAI(mode){
       return arr.some(function(r){ var c = r && (Array.isArray(r.correctIds) ? r.correctIds : r.correctIds ? [r.correctIds] : []); return c.some(function(id){ return !!document.querySelector('[data-ai-id="' + String(id).replace(/[^\w-]/g, '') + '"]'); }); });
     };
     // Одна страница — один запрос: если «Точки» и «Авто» нажаты подряд, обе кнопки ждут один и тот же ответ
-    progressBtn = btn; progressN = 0;
+    progressBtn = btn; progressN = 0; deadlineAt = Date.now() + 120000;
     var res;
     if(hit) res = { text: hit.text, model: hit.model + ' (кэш)' };
     else {
@@ -512,9 +549,11 @@ async function runAI(mode){
       lsSet('ai_cache', cache);
     }
     btn.title = res.model;
+    status('');
     btn.textContent = '✓';
     setTimeout(function(){ btn.textContent = orig; }, 1800);
   } catch(e){
+    status('');
     alert('Ошибка: ' + ((e && e.message) ? e.message : String(e)));
     btn.textContent = '✕';
     setTimeout(function(){ btn.textContent = orig; }, 2000);
