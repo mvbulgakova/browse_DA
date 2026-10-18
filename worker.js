@@ -12,27 +12,39 @@ export default {
       const key = (url.searchParams.get('key') || '').trim();
       const bodyText = await request.text();
 
-      // Если ключ начинается на AIza — отправляем в зрячий Gemini 2.5 Flash (видит картинки!)
-      if (key.startsWith('AIza')) {
-        const gUrl = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + encodeURIComponent(key);
-        const r = await fetch(gUrl, {
+      // Если ключ начинается на sk- — отправляем в DeepSeek
+      if (key.startsWith('sk-')) {
+        const r = await fetch('https://api.deepseek.com/chat/completions', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + key
+          },
           body: bodyText
         });
         return new Response(await r.text(), { status: r.status, headers: { ...cors, 'Content-Type': 'application/json' } });
       }
 
-      // Иначе (ключ sk-...) — отправляем в DeepSeek
-      const r = await fetch('https://api.deepseek.com/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer ' + key
-        },
-        body: bodyText
-      });
-      return new Response(await r.text(), { status: r.status, headers: { ...cors, 'Content-Type': 'application/json' } });
+      // Любой другой ключ — отправляем в Gemini (gemini-3.8-flash с поддержкой картинок!)
+      const models = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.0-flash'];
+      let lastResText = '';
+      let lastStatus = 500;
+
+      for (const m of models) {
+        const gUrl = `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${encodeURIComponent(key)}`;
+        const r = await fetch(gUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: bodyText
+        });
+        lastResText = await r.text();
+        lastStatus = r.status;
+        if (r.ok) {
+          return new Response(lastResText, { status: 200, headers: { ...cors, 'Content-Type': 'application/json' } });
+        }
+      }
+      return new Response(lastResText, { status: lastStatus, headers: { ...cors, 'Content-Type': 'application/json' } });
+
     } catch (e) {
       return new Response(JSON.stringify({ error: { message: e.message } }), {
         status: 500,
