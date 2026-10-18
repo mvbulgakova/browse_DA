@@ -3,63 +3,38 @@ export default {
     const cors = {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     };
     if (request.method === 'OPTIONS') return new Response(null, { headers: cors });
 
-    const url = new URL(request.url);
-    // Ключ DeepSeek передается из приложения
-    const apiKey = url.searchParams.get('key');
-
-    if (!apiKey) {
-      return new Response(JSON.stringify({ error: 'Не указан DeepSeek API Key' }), {
-        status: 400,
-        headers: { ...cors, 'Content-Type': 'application/json' }
-      });
-    }
-
     try {
-      const clientBody = await request.json();
-      
-      // Конвертируем запрос из формата Gemini в стандартный формат DeepSeek (OpenAI-compatible)
-      const promptText = clientBody.contents[0].parts[0].text;
+      const url = new URL(request.url);
+      const key = (url.searchParams.get('key') || '').trim();
+      const bodyText = await request.text();
 
-      const deepseekResponse = await fetch('https://api.deepseek.com/chat/completions', {
+      // Если ключ начинается на AIza — отправляем в зрячий Gemini 2.5 Flash (видит картинки!)
+      if (key.startsWith('AIza')) {
+        const gUrl = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + encodeURIComponent(key);
+        const r = await fetch(gUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: bodyText
+        });
+        return new Response(await r.text(), { status: r.status, headers: { ...cors, 'Content-Type': 'application/json' } });
+      }
+
+      // Иначе (ключ sk-...) — отправляем в DeepSeek
+      const r = await fetch('https://api.deepseek.com/chat/completions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': 'Bearer ' + apiKey
+          'Authorization': 'Bearer ' + key
         },
-        body: JSON.stringify({
-          model: 'deepseek-chat',
-          messages: [
-            { role: 'system', content: 'Ты помощник для прохождения тестов. Отвечай строго в формате JSON, без лишнего текста и markdown-оберток, если требуется.' },
-            { role: 'user', content: promptText }
-          ],
-          response_format: { type: 'json_object' },
-          temperature: 0.1
-        })
+        body: bodyText
       });
-
-      const dsData = await deepseekResponse.json();
-      
-      // Превращаем ответ DeepSeek обратно в формат, который ожидает наш скрипт в браузере
-      const answerText = dsData.choices[0].message.content;
-      const formattedResponse = {
-        candidates: [{
-          content: {
-            parts: [{ text: answerText }]
-          }
-        }]
-      };
-
-      return new Response(JSON.stringify(formattedResponse), {
-        status: 200,
-        headers: { ...cors, 'Content-Type': 'application/json' }
-      });
-
-    } catch (err) {
-      return new Response(JSON.stringify({ error: err.message }), {
+      return new Response(await r.text(), { status: r.status, headers: { ...cors, 'Content-Type': 'application/json' } });
+    } catch (e) {
+      return new Response(JSON.stringify({ error: { message: e.message } }), {
         status: 500,
         headers: { ...cors, 'Content-Type': 'application/json' }
       });
