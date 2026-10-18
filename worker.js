@@ -57,9 +57,9 @@ export default {
       } else if (!rawBody.generationConfig) {
         geminiBody.generationConfig = { responseMimeType: 'application/json', temperature: 0.1 };
       }
+      // Используем точное название модели, которое требует Google
+      const gUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${encodeURIComponent(key)}`;
 
-      // Используем актуальную и стабильную модель gemini-2.0-flash
-      const gUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(key)}`;
       const r = await fetch(gUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
