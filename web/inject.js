@@ -18,7 +18,7 @@ hz.style = 'position:fixed;bottom:0;left:0;width:45px;height:45px;z-index:214748
 var lt = 0; hz.ontouchend = function(){ var n=Date.now(); if(n-lt<350) bar.style.display=(bar.style.display==='none'?'flex':'none'); lt=n; };
 document.body.appendChild(hz);
 document.getElementById('btn-cfg').onclick = function(){
-  var k = prompt('1. API-ключи через запятую, пробуются по очереди.\nGemini: AIza…/AQ.…  GitHub: github_pat_…/ghp_…  Mistral: mstrl_…  OpenRouter: sk-or-…  HuggingFace: hf_…  NVIDIA: nvapi-…  Groq: gsk_…  Cerebras: csk-…  DeepSeek: sk-…', loadKeyString());
+  var k = prompt('1. API-ключи через запятую, пробуются по очереди.\nGemini: AIza…/AQ.…  GitHub: github_pat_…/ghp_…  Mistral: mstrl_…  OpenRouter: sk-or-…  HuggingFace: hf_…  NVIDIA: nvapi-…  Groq: gsk_…  Cerebras: csk-…  DeepSeek: sk-…\nЯндекс: AQVN…@<id каталога b1g…>', loadKeyString());
   if(k !== null){
     saveKeyString(k.trim());
     if(k.trim()) checkKeys(getKeys());
@@ -202,6 +202,12 @@ async function checkKeys(keys){
     var head = name + ' …' + keyTag(key) + ': ';
     try {
       if(prov === 'deepseek'){ lines.push(head + 'проверяется только при запросе (через воркер)'); continue; }
+      if(prov === 'yandex'){
+        if(!/^b1g\w+/.test(splitKey(key).folder)){ lines.push(head + '✕ допишите к ключу @<id каталога>, например AQVN…@b1g…'); continue; }
+        var y = await callOai('yandex', key, OAI.yandex.models[0].id, [{ text: 'Ответь одним словом: ок' }], false);
+        lines.push(head + (y.text ? '✓ моделей: ' + OAI.yandex.models.length + ', видят картинки: ' + OAI.yandex.models.filter(function(m){ return m.vision; }).length : '✕ ' + short(y.error)));
+        continue;
+      }
       var url = prov === 'gemini' ? 'https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000&key=' + encodeURIComponent(key) : (OAI[prov].listUrl || OAI[prov].base + '/models');
       var r = prov === 'gemini' ? await tfetch(url, {}, 15000) : await httpFor(OAI[prov])(url, { headers: authHeaders(OAI[prov], key) }, 15000);
       var raw = await r.text(), d = null;
@@ -268,6 +274,7 @@ function tick(label){
 
 // Тип ключа по префиксу
 function provider(key){
+  if(/^AQVN/.test(key)) return 'yandex';
   if(/^(AIza|AQ\.)/.test(key)) return 'gemini';
   if(/^sk-or-/.test(key)) return 'openrouter';
   if(/^gsk_/.test(key)) return 'groq';
@@ -293,11 +300,18 @@ var OAI = {
     fallback: [{ id: 'openai/gpt-4.1', vision: true }, { id: 'openai/gpt-4o', vision: true }, { id: 'openai/gpt-4.1-mini', vision: true }, { id: 'openai/gpt-4o-mini', vision: true }] },
   nvidia: { name: 'NVIDIA', base: 'https://integrate.api.nvidia.com/v1', native: true,
     fallback: [{ id: 'meta/llama-4-maverick-17b-128e-instruct', vision: true }] },
-  huggingface: { name: 'HuggingFace', base: 'https://router.huggingface.co/v1', fallback: [{ id: 'Qwen/Qwen3-VL-30B-A3B-Instruct', vision: true }] }
+  huggingface: { name: 'HuggingFace', base: 'https://router.huggingface.co/v1', fallback: [{ id: 'Qwen/Qwen3-VL-30B-A3B-Instruct', vision: true }] },
+  // Yandex AI Studio: ключ вида AQVN…@b1g… (API-ключ сервисного аккаунта @ id каталога); без CORS — через приложение
+  yandex: { name: 'Яндекс', base: 'https://llm.api.cloud.yandex.net/v1', native: true, auth: 'Api-Key',
+    models: [{ id: 'qwen2.5-vl-32b-instruct/latest', vision: true }, { id: 'gemma-3-27b-it/latest', vision: true },
+      { id: 'qwen3-235b-a22b-fp8/latest' }, { id: 'yandexgpt/latest' }] }
 };
+// Ключ Яндекса хранится вместе с id каталога: AQVN…@b1g…
+function splitKey(key){ var i = key.indexOf('@'); return i < 0 ? { secret: key, folder: '' } : { secret: key.slice(0, i), folder: key.slice(i + 1) }; }
+function modelUri(prov, key, model){ return prov === 'yandex' ? 'gpt://' + splitKey(key).folder + '/' + model : model; }
 function httpFor(P){ return P.native ? nativeFetch : tfetch; }
 function authHeaders(P, key, extra){
-  var h = { Authorization: 'Bearer ' + key, Accept: 'application/json' };
+  var h = { Authorization: (P.auth || 'Bearer') + ' ' + splitKey(key).secret, Accept: 'application/json' };
   Object.keys(P.headers || {}).forEach(function(k){ h[k] = P.headers[k]; });
   Object.keys(extra || {}).forEach(function(k){ h[k] = extra[k]; });
   return h;
@@ -305,6 +319,7 @@ function authHeaders(P, key, extra){
 function sizeOf(id){ var m = /(\d+)b\b/i.exec(id); return m ? +m[1] : 0; }
 async function getOaiModels(prov, key){
   var P = OAI[prov], ck = 'ai_models2_' + prov + keyTag(key), cache = lsGet(ck, null);
+  if(P.models) return P.models;
   if(cache && cache.ts > Date.now() - 86400e3 && cache.list && cache.list.length) return cache.list;
   var list = [];
   try {
@@ -351,7 +366,7 @@ async function callOai(prov, key, model, parts, useImg){
   tick(OAI[prov].name + ' ' + model);
   var r = await httpFor(OAI[prov])(OAI[prov].base + '/chat/completions', {
     method: 'POST', headers: headers,
-    body: JSON.stringify({ model: model, messages: [{ role: 'user', content: content }], temperature: 0.1 })
+    body: JSON.stringify({ model: modelUri(prov, key, model), messages: [{ role: 'user', content: content }], temperature: 0.1 })
   }, 45000);
   var raw = await r.text(), d = null;
   try { d = JSON.parse(raw); } catch(e){}
@@ -403,7 +418,7 @@ async function askOai(prov, key, parts, accept){
 }
 
 // Порядок провайдеров: сначала те, что лучше всего читают формулы-картинки
-var PROVIDER_ORDER = { gemini: 0, github: 1, mistral: 2, openrouter: 3, huggingface: 4, nvidia: 5, groq: 6, cerebras: 7, deepseek: 8 };
+var PROVIDER_ORDER = { gemini: 0, github: 1, mistral: 2, yandex: 3, openrouter: 4, huggingface: 5, nvidia: 6, groq: 7, cerebras: 8, deepseek: 9 };
 async function askAI(keys, parts, accept){
   var errors = [];
   keys = keys.slice().sort(function(a, b){ return PROVIDER_ORDER[provider(a)] - PROVIDER_ORDER[provider(b)]; });

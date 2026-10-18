@@ -37,7 +37,8 @@ public class MainActivity extends Activity {
     /* API нейросетей, которые не разрешают запросы из браузера (CORS) — их выполняет приложение */
     private static final String[] API_HOSTS = {
         "models.github.ai", "integrate.api.nvidia.com", "api.sambanova.ai", "router.huggingface.co",
-        "api.mistral.ai", "api.groq.com", "openrouter.ai", "api.cerebras.ai", "generativelanguage.googleapis.com"
+        "api.mistral.ai", "api.groq.com", "openrouter.ai", "api.cerebras.ai", "generativelanguage.googleapis.com",
+        "llm.api.cloud.yandex.net"
     };
     /* Убираем старую панель перед вставкой новой версии скрипта */
     private static final String REMOVE_OLD_BAR =
