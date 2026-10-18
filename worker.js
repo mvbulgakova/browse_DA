@@ -12,7 +12,7 @@ export default {
       const key = (url.searchParams.get('key') || '').trim();
       const rawBody = await request.json();
 
-      // 1. Если это ключ DeepSeek (sk-)
+      // 1. Если это DeepSeek
       if (key.startsWith('sk-')) {
         let promptText = "";
         if (rawBody.contents && rawBody.contents[0]) {
@@ -41,12 +41,12 @@ export default {
         });
 
         const dsData = await dsRes.json();
-        const answerText = dsData.choices && dsData.choices[0] ? dsData.choices[0].message.content : JSON.stringify(dsData);
+        const answerText = dsData.choices && dsData.choices[0] ? dsData.choices[0].message.content : '{"results":[]}';
         const formatted = { candidates: [{ content: { parts: [{ text: answerText }] } }] };
         return new Response(JSON.stringify(formatted), { status: 200, headers: { ...cors, 'Content-Type': 'application/json' } });
       }
 
-      // 2. Если это ключ Gemini (включая AQ...)
+      // 2. Если это Gemini
       let geminiBody = rawBody;
       if (!rawBody.contents && rawBody.messages) {
         const textContent = rawBody.messages.map(m => m.content).join('\n');
@@ -57,23 +57,43 @@ export default {
       } else if (!rawBody.generationConfig) {
         geminiBody.generationConfig = { responseMimeType: 'application/json', temperature: 0.1 };
       }
-      // Используем точное название модели, которое требует Google
-      const gUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${encodeURIComponent(key)}`;
 
+      const gUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${encodeURIComponent(key)}`;
       const r = await fetch(gUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(geminiBody)
       });
 
-      const resText = await r.text();
-      return new Response(resText, { status: r.status, headers: { ...cors, 'Content-Type': 'application/json' } });
+      const data = await r.json();
+
+      // Железобетонная защита: если Google вернул другой формат, аккуратно приводим его к стандарту приложения
+      if (data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) {
+        return new Response(JSON.stringify(data), { status: 200, headers: { ...cors, 'Content-Type': 'application/json' } });
+      }
+
+      // Если ответ пришёл в поле text или другом виде — заворачиваем в нужную структуру
+      let extractedText = "{\"results\":[]}";
+      if (data && data.promptFeedback) {
+        extractedText = "{\"results\":[]}";
+      } else {
+        extractedText = JSON.stringify(data);
+      }
+
+      const safeResponse = {
+        candidates: [{
+          content: {
+            parts: [{ text: extractedText }]
+          }
+        }]
+      };
+
+      return new Response(JSON.stringify(safeResponse), { status: 200, headers: { ...cors, 'Content-Type': 'application/json' } });
 
     } catch (e) {
-      return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: '{"results":[]}' }] } }] }), {
-        status: 200,
-        headers: { ...cors, 'Content-Type': 'application/json' }
-      });
+      // Даже при сбое воркер вернет пустой JSON без падения приложения
+      const fallback = { candidates: [{ content: { parts: [{ text: '{"results":[]}' }] } }] };
+      return new Response(JSON.stringify(fallback), { status: 200, headers: { ...cors, 'Content-Type': 'application/json' } });
     }
   }
 };
