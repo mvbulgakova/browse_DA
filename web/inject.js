@@ -207,7 +207,7 @@ async function checkKeys(keys){
       var raw = await r.text(), d = null;
       try { d = JSON.parse(raw); } catch(e){}
       if(!r.ok){ lines.push(head + '✕ ' + (pickError(d) || ('HTTP ' + r.status + ' ' + short(raw)))); continue; }
-      ['ai_models_' + keyTag(key), 'ai_models_' + prov + keyTag(key)].forEach(function(k){ try { localStorage.removeItem(k); } catch(e){} });
+      ['ai_models_' + keyTag(key), 'ai_models2_' + prov + keyTag(key)].forEach(function(k){ try { localStorage.removeItem(k); } catch(e){} });
       var list = prov === 'gemini' ? await getModels(key) : await getOaiModels(prov, key);
       var vis = prov === 'gemini' ? list.length : list.filter(function(m){ return m.vision; }).length;
       lines.push(head + '✓ моделей: ' + list.length + ', видят картинки: ' + vis);
@@ -297,7 +297,7 @@ var OAI = {
 function httpFor(P){ return P.native ? nativeFetch : tfetch; }
 function sizeOf(id){ var m = /(\d+)b\b/i.exec(id); return m ? +m[1] : 0; }
 async function getOaiModels(prov, key){
-  var P = OAI[prov], ck = 'ai_models_' + prov + keyTag(key), cache = lsGet(ck, null);
+  var P = OAI[prov], ck = 'ai_models2_' + prov + keyTag(key), cache = lsGet(ck, null);
   if(cache && cache.ts > Date.now() - 86400e3 && cache.list && cache.list.length) return cache.list;
   var list = [];
   try {
@@ -317,7 +317,7 @@ async function getOaiModels(prov, key){
         .map(function(m){ var mods = m.architecture && m.architecture.input_modalities || []; return { id: m.id, vision: mods.indexOf('image') >= 0, ctx: m.context_length || 0 }; })
         .sort(function(a, b){ return (b.vision - a.vision) || (b.ctx - a.ctx); });
     } else if(prov === 'mistral'){
-      list = arr.filter(function(m){ return m && m.id && (!m.capabilities || m.capabilities.completion_chat) && !/embed|moderation|ocr|transcri|voxtral|codestral|devstral|saba/.test(m.id) && /latest$/.test(m.id); })
+      list = arr.filter(function(m){ return m && m.id && (!m.capabilities || m.capabilities.completion_chat) && !/embed|moderation|ocr|transcri|voxtral|codestral|devstral|saba|ministral|vibe|cli/.test(m.id) && /latest$/.test(m.id); })
         .map(function(m){ return { id: m.id, vision: !!(m.capabilities && m.capabilities.vision), w: /magistral/.test(m.id) ? -1 : /^mistral-medium/.test(m.id) ? 4 : /^mistral-large|^pixtral-large/.test(m.id) ? 3 : /small/.test(m.id) ? 1 : 0 }; })
         .sort(function(a, b){ return (b.vision - a.vision) || (b.w - a.w); });
     } else {
@@ -380,7 +380,8 @@ async function askOai(prov, key, parts, accept){
     if(/free-models-per-day/i.test(msg)){ block(tag, '*', '', 6 * 3600e3); limited.push('дневной лимит бесплатных моделей'); break; }
     status(m.id + ': ' + short(msg));
     if(r.status === 429 || /quota|rate limit|exhausted/i.test(msg)){
-      if(!/retry in|per day|daily|free-models/i.test(msg) && !m.retried){ m.retried = true; await sleep(2500); i--; tries--; continue; }
+      // Лимит «запросов в секунду/минуту»: ждём и повторяем ту же (сильную) модель до 2 раз, а не уходим на слабые
+      if(!/retry in|per day|daily|free-models/i.test(msg) && (m.retried || 0) < 2){ m.retried = (m.retried || 0) + 1; status(m.id + ': лимит частоты, жду…'); await sleep(3000 * m.retried); i--; tries--; continue; }
       block(tag, m.id, msg, 120e3); limited.push(m.id); continue;
     }
     if(r.status === 404 || /not found|does not exist|decommission|deprecat|not supported/i.test(msg)){ block(tag, m.id, '', 86400e3); continue; }
