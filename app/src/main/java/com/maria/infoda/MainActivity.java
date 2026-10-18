@@ -15,75 +15,94 @@ public class MainActivity extends Activity {
         "(function(){" +
         "if(document.getElementById('m-ai-bar')) return;" +
         "var PROXY_URL = 'https://proxy.mariya-bulgakova2004.workers.dev';" +
+        
         "var bar = document.createElement('div');" +
         "bar.id = 'm-ai-bar';" +
-        "bar.style = 'position:fixed;bottom:8px;right:8px;z-index:2147483647;display:flex;gap:5px;opacity:0.32;font:12px sans-serif;';" +
-        "bar.innerHTML = '<button id=\"m-ai-dot\" style=\"background:#222;color:#fff;border:1px solid #555;border-radius:12px;padding:5px 10px;\">·</button>' +" +
-        "'<button id=\"m-ai-auto\" style=\"background:#222;color:#fff;border:1px solid #555;border-radius:12px;padding:5px 9px;\">⚡</button>' +" +
-        "'<button id=\"m-ai-key\" style=\"background:#222;color:#fff;border:1px solid #555;border-radius:12px;padding:5px 8px;\">⚙</button>';" +
+        "bar.style = 'position:fixed;bottom:16px;left:50%;transform:translateX(-50%);z-index:2147483647;display:flex;gap:10px;';" +
+        "bar.innerHTML = '<button id=\"btn-dots\" style=\"background:#333;color:#fff;border:none;border-radius:20px;padding:10px 18px;font:bold 14px sans-serif;box-shadow:0 4px 12px rgba(0,0,0,0.4);\">· Точки</button>' +" +
+        "'<button id=\"btn-auto\" style=\"background:#0a84ff;color:#fff;border:none;border-radius:20px;padding:10px 18px;font:bold 14px sans-serif;box-shadow:0 4px 12px rgba(0,0,0,0.4);\">⚡ Авто</button>';" +
         "document.body.appendChild(bar);" +
-        "var hz = document.createElement('div');" +
-        "hz.style = 'position:fixed;bottom:0;left:0;width:45px;height:45px;z-index:2147483646;';" +
-        "var lt = 0; hz.ontouchend = function(){ var n=Date.now(); if(n-lt<350) bar.style.display=(bar.style.display==='none'?'flex':'none'); lt=n; };" +
-        "document.body.appendChild(hz);" +
-        "document.getElementById('m-ai-key').onclick = function(){" +
+
+        "var keyBtn = document.createElement('button');" +
+        "keyBtn.innerHTML = '⚙';" +
+        "keyBtn.style = 'position:fixed;bottom:16px;left:16px;z-index:2147483647;background:#333;color:#fff;border:none;border-radius:50%;width:40px;height:40px;font:16px sans-serif;box-shadow:0 2px 8px rgba(0,0,0,0.3);';" +
+        "document.body.appendChild(keyBtn);" +
+
+        "keyBtn.onclick = function(){" +
         "  var k = prompt('Введи DeepSeek API Key (sk-...):', localStorage.getItem('ds_api_key') || '');" +
         "  if(k !== null) localStorage.setItem('ds_api_key', k.trim());" +
         "};" +
+
         "async function callAI(key, payload){" +
         "  var res = await fetch(PROXY_URL + '?key=' + encodeURIComponent(key), { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });" +
         "  return await res.json();" +
         "}" +
-        "async function solve(mode){" +
+
+        "async function runAI(mode){" +
         "  var key = localStorage.getItem('ds_api_key');" +
-        "  if(!key){ document.getElementById('m-ai-key').click(); key = localStorage.getItem('ds_api_key'); if(!key) return; }" +
-        "  var btn = document.getElementById('m-ai-dot'); btn.textContent = '…';" +
+        "  if(!key){ keyBtn.click(); key = localStorage.getItem('ds_api_key'); if(!key) return; }" +
+        
+        "  var activeBtn = mode === 'auto' ? document.getElementById('btn-auto') : document.getElementById('btn-dots');" +
+        "  var origText = activeBtn.textContent;" +
+        "  activeBtn.textContent = 'Думаю...';" +
+        
         "  document.querySelectorAll('.ai-stealth-dot').forEach(function(e){ e.remove(); });" +
+
         "  var questions = [];" +
-        "  document.querySelectorAll('.que').forEach(function(q, qi){" +
-        "    var qc = q.querySelector('.qtext') ? q.querySelector('.qtext').cloneNode(true) : q.cloneNode(true);" +
-        "    qc.querySelectorAll('script[type*=\"math/tex\"]').forEach(function(s){ s.replaceWith(' [Формула: ' + s.textContent + '] '); });" +
+        "  var blocks = document.querySelectorAll('.que, .question, [class*=\"question\"], .card, fieldset');" +
+        "  if(!blocks.length) blocks = [document.body];" +
+
+        "  blocks.forEach(function(q, qi){" +
+        "    var qText = q.innerText.trim();" +
         "    var opts = [];" +
-        "    q.querySelectorAll('.answer input[type=\"radio\"], .answer input[type=\"checkbox\"]').forEach(function(inp, oi){" +
-        "      if(inp.type==='hidden') return;" +
-        "      var id = 'q'+qi+'_opt'+oi; inp.setAttribute('data-ai-id', id);" +
-        "      var c = inp.closest('.r0, .r1, .d-flex, label') || inp.parentElement;" +
-        "      var lc = c.cloneNode(true);" +
-        "      lc.querySelectorAll('script[type*=\"math/tex\"]').forEach(function(s){ s.replaceWith(' [Формула: ' + s.textContent + '] '); });" +
-        "      opts.push({ id:id, type:inp.type, text:lc.innerText.trim() });" +
+        "    q.querySelectorAll('input[type=\"radio\"], input[type=\"checkbox\"], label, .answer, .option').forEach(function(el, oi){" +
+        "      var inp = el.tagName === 'INPUT' ? el : el.querySelector('input');" +
+        "      if(inp && inp.type !== 'hidden'){" +
+        "        var id = 'q'+qi+'_opt'+oi;" +
+        "        inp.setAttribute('data-ai-id', id);" +
+        "        opts.push({ id:id, text:el.innerText.trim() });" +
+        "      }" +
         "    });" +
-        "    var txts = [];" +
-        "    q.querySelectorAll('.answer input[type=\"text\"], .answer input[type=\"number\"]').forEach(function(inp, ti){" +
-        "      var id = 'q'+qi+'_txt'+ti; inp.setAttribute('data-ai-id', id); txts.push(id);" +
-        "    });" +
-        "    questions.push({ questionIndex:qi, questionText:qc.innerText.trim(), options:opts, textInputIds:txts });" +
+        "    if(qText && opts.length > 0) questions.push({ questionIndex:qi, text:qText.slice(0, 1000), options:opts });" +
         "  });" +
-        "  if(!questions.length){ btn.textContent='!'; setTimeout(function(){btn.textContent='·';},1500); return; }" +
-        "  var pr = 'Реши тест Moodle и верни ТОЛЬКО JSON объект с массивом results: [{\"questionIndex\":0,\"correctOptionIds\":[\"q0_opt1\"],\"textAnswers\":{\"q0_txt0\":\"ответ\"}}]. Вопросы:\\n' + JSON.stringify(questions);" +
+
+        "  if(!questions.length){ activeBtn.textContent = 'Нет вопросов!'; setTimeout(function(){ activeBtn.textContent = origText; }, 2000); return; }" +
+
+        "  var pr = 'Реши тест и верни ТОЛЬКО JSON объект с массивом результатов: [{\"questionIndex\":0,\"correctOptionTexts\":[\"текст правильного варианта\"]}] на основе текста вопроса и вариантов. Вопросы:\\n' + JSON.stringify(questions);" +
         "  try {" +
         "    var data = await callAI(key, { contents:[{parts:[{text:pr}]}] });" +
         "    var rawText = data.candidates[0].content.parts[0].text;" +
         "    rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();" +
         "    var parsed = JSON.parse(rawText);" +
         "    var res = Array.isArray(parsed) ? parsed : (parsed.results || parsed.answers || []);" +
+        "" +
         "    res.forEach(function(r){" +
-        "      (r.correctOptionIds||[]).forEach(function(id){" +
-        "        var el = document.querySelector('[data-ai-id=\"'+id+'\"]');" +
-        "        if(!el) return;" +
-        "        if(mode==='auto'){ if(!el.checked){ el.click(); el.dispatchEvent(new Event('change',{bubbles:true})); } }" +
-        "        else { var row = el.closest('.r0, .r1, .d-flex, label') || el.parentElement; var d = document.createElement('span'); d.className='ai-stealth-dot'; d.style='display:inline-block;width:4px;height:4px;border-radius:50%;background:#777;opacity:0.55;margin-left:6px;vertical-align:middle;'; row.appendChild(d); }" +
+        "      (r.correctOptionTexts||[]).forEach(function(ansText){" +
+        "        document.querySelectorAll('input[data-ai-id]').forEach(function(inp){" +
+        "          var parent = inp.closest('label') || inp.parentElement || inp.closest('.answer');" +
+        "          if(parent && (parent.innerText.includes(ansText) || ansText.includes(parent.innerText.trim()))){" +
+        "            if(mode === 'auto'){" +
+        "              if(!inp.checked){ inp.click(); inp.dispatchEvent(new Event('change',{bubbles:true})); }" +
+        "            } else {" +
+        "              var dot = document.createElement('span');" +
+        "              dot.className = 'ai-stealth-dot';" +
+        "              dot.style = 'display:inline-block;width:6px;height:6px;border-radius:50%;background:#ff3b30;margin-left:8px;vertical-align:middle;';" +
+        "              parent.appendChild(dot);" +
+        "            }" +
+        "          }" +
+        "        });" +
         "      });" +
-        "      if(r.textAnswers){ Object.keys(r.textAnswers).forEach(function(id){" +
-        "        var inp = document.querySelector('[data-ai-id=\"'+id+'\"]'); if(!inp) return;" +
-        "        if(mode==='auto'){ inp.value=r.textAnswers[id]; inp.dispatchEvent(new Event('input',{bubbles:true})); inp.dispatchEvent(new Event('change',{bubbles:true})); }" +
-        "        else { inp.placeholder = r.textAnswers[id]; }" +
-        "      }); }" +
         "    });" +
-        "    btn.textContent = '·';" +
-        "  } catch(e){ btn.textContent = '✕'; setTimeout(function(){btn.textContent='·';},2000); }" +
-        "}" +
-        "document.getElementById('m-ai-dot').onclick = function(){ solve('stealth'); };" +
-        "document.getElementById('m-ai-auto').onclick = function(){ solve('auto'); };" +
+        "    activeBtn.textContent = '✅ Готово';" +
+        "    setTimeout(function(){ activeBtn.textContent = origText; }, 2500);" +
+        "  } catch(e){" +
+        "    activeBtn.textContent = '❌ Ошибка';" +
+        "    setTimeout(function(){ activeBtn.textContent = origText; }, 2500);" +
+        "  }" +
+        "};" +
+
+        "document.getElementById('btn-dots').onclick = function(){ runAI('dots'); };" +
+        "document.getElementById('btn-auto').onclick = function(){ runAI('auto'); };" +
         "})();";
 
     @Override
@@ -107,8 +126,7 @@ public class MainActivity extends Activity {
             }
         });
 
-        // Сюда можно сразу прописать адрес твоего ИнфоДа, чтобы при запуске открывался он
-        webView.loadUrl("https://www.google.com"); // или точная ссылка на твой вуз
+        webView.loadUrl("https://lk.mpgu.su/account/");
     }
 
     @Override
