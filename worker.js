@@ -10,23 +10,59 @@ export default {
     try {
       const url = new URL(request.url);
       const key = (url.searchParams.get('key') || '').trim();
-      const bodyText = await request.text();
+      const rawBody = await request.json();
 
-      // Если ключ начинается на sk- — отправляем в DeepSeek
+      // 1. Если ключ от DeepSeek (начинается на sk-)
       if (key.startsWith('sk-')) {
-        const r = await fetch('https://api.deepseek.com/chat/completions', {
+        let promptText = "";
+        if (rawBody.contents && rawBody.contents[0]) {
+          promptText = rawBody.contents[0].parts[0].text;
+        } else if (rawBody.messages) {
+          promptText = rawBody.messages[1] ? rawBody.messages[1].content : JSON.stringify(rawBody);
+        } else {
+          promptText = JSON.stringify(rawBody);
+        }
+
+        const dsRes = await fetch('https://api.deepseek.com/chat/completions', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'Authorization': 'Bearer ' + key
           },
-          body: bodyText
+          body: JSON.stringify({
+            model: 'deepseek-chat',
+            messages: [
+              { role: 'system', content: 'Ты решаешь тест Moodle. Верни ТОЛЬКО валидный JSON формата: {"results":[{"questionIndex":0,"correctIds":["q0_opt0"]}]}' },
+              { role: 'user', content: promptText }
+            ],
+            response_format: { type: 'json_object' },
+            temperature: 0.1
+          })
         });
-        return new Response(await r.text(), { status: r.status, headers: { ...cors, 'Content-Type': 'application/json' } });
+
+        const dsData = await dsRes.json();
+        const answerText = dsData.choices && dsData.choices[0] ? dsData.choices[0].message.content : JSON.stringify(dsData);
+        
+        // Превращаем в формат ответа, который ожидает приложение
+        const formatted = { candidates: [{ content: { parts: [{ text: answerText }] } }] };
+        return new Response(JSON.stringify(formatted), { status: 200, headers: { ...cors, 'Content-Type': 'application/json' } });
       }
 
-      // Любой другой ключ — отправляем в Gemini (gemini-3.8-flash с поддержкой картинок!)
-      const models = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.0-flash'];
+      // 2. Если это ключ Gemini (любой другой, включая AQ...)
+      // Приводим запрос к строгому формату Google Gemini API
+      let geminiBody = rawBody;
+      if (!rawBody.contents && rawBody.messages) {
+        // Если клиент прислал формат OpenAI — конвертируем в Gemini
+        const textContent = rawBody.messages.map(m => m.content).join('\n');
+        geminiBody = {
+          contents: [{ parts: [{ text: textContent }] }],
+          generationConfig: { responseMimeType: 'application/json', temperature: 0.1 }
+        };
+      } else if (!rawBody.generationConfig) {
+        geminiBody.generationConfig = { responseMimeType: 'application/json', temperature: 0.1 };
+      }
+
+      const models = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-2.5-flash', 'gemini-1.5-flash'];
       let lastResText = '';
       let lastStatus = 500;
 
@@ -35,7 +71,7 @@ export default {
         const r = await fetch(gUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: bodyText
+          body: JSON.stringify(geminiBody)
         });
         lastResText = await r.text();
         lastStatus = r.status;
