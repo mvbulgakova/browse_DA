@@ -18,7 +18,7 @@ hz.style = 'position:fixed;bottom:0;left:0;width:45px;height:45px;z-index:214748
 var lt = 0; hz.ontouchend = function(){ var n=Date.now(); if(n-lt<350) bar.style.display=(bar.style.display==='none'?'flex':'none'); lt=n; };
 document.body.appendChild(hz);
 document.getElementById('btn-cfg').onclick = function(){
-  var k = prompt('1. API-ключи через запятую, пробуются по очереди.\nGemini: AIza…/AQ.…  Groq: gsk_…  OpenRouter: sk-or-…  Mistral: 32 символа  Cerebras: csk-…  DeepSeek: sk-…', loadKeyString());
+  var k = prompt('1. API-ключи через запятую, пробуются по очереди.\nGemini: AIza…/AQ.…  Groq: gsk_…  OpenRouter: sk-or-…  Mistral: mstrl_… или 32 символа  Cerebras: csk-…  DeepSeek: sk-…', loadKeyString());
   if(k !== null) saveKeyString(k.trim());
   var p = prompt('2. Адрес твоего воркера Cloudflare:', localStorage.getItem('ai_proxy') || DEFAULT_PROXY);
   if(p !== null) localStorage.setItem('ai_proxy', p.trim().replace(/\/$/, ''));
@@ -179,7 +179,7 @@ function provider(key){
   if(/^gsk_/.test(key)) return 'groq';
   if(/^csk-/.test(key)) return 'cerebras';
   if(/^sk-/.test(key)) return 'deepseek';
-  if(/^[A-Za-z0-9]{32}$/.test(key)) return 'mistral';
+  if(/^mstrl_/i.test(key) || /^[A-Za-z0-9]{32}$/.test(key)) return 'mistral';
   return 'gemini';
 }
 // OpenAI-совместимые API (все разрешают запросы прямо из браузера)
