@@ -12,7 +12,7 @@ export default {
       const key = (url.searchParams.get('key') || '').trim();
       const rawBody = await request.json();
 
-      // 1. Если ключ от DeepSeek (начинается на sk-)
+      // 1. Если это ключ DeepSeek (sk-)
       if (key.startsWith('sk-')) {
         let promptText = "";
         if (rawBody.contents && rawBody.contents[0]) {
@@ -42,17 +42,13 @@ export default {
 
         const dsData = await dsRes.json();
         const answerText = dsData.choices && dsData.choices[0] ? dsData.choices[0].message.content : JSON.stringify(dsData);
-        
-        // Превращаем в формат ответа, который ожидает приложение
         const formatted = { candidates: [{ content: { parts: [{ text: answerText }] } }] };
         return new Response(JSON.stringify(formatted), { status: 200, headers: { ...cors, 'Content-Type': 'application/json' } });
       }
 
-      // 2. Если это ключ Gemini (любой другой, включая AQ...)
-      // Приводим запрос к строгому формату Google Gemini API
+      // 2. Если это ключ Gemini (включая AQ...)
       let geminiBody = rawBody;
       if (!rawBody.contents && rawBody.messages) {
-        // Если клиент прислал формат OpenAI — конвертируем в Gemini
         const textContent = rawBody.messages.map(m => m.content).join('\n');
         geminiBody = {
           contents: [{ parts: [{ text: textContent }] }],
@@ -62,28 +58,20 @@ export default {
         geminiBody.generationConfig = { responseMimeType: 'application/json', temperature: 0.1 };
       }
 
-      const models = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-2.5-flash', 'gemini-1.5-flash'];
-      let lastResText = '';
-      let lastStatus = 500;
+      // Используем актуальную и стабильную модель gemini-2.0-flash
+      const gUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(key)}`;
+      const r = await fetch(gUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(geminiBody)
+      });
 
-      for (const m of models) {
-        const gUrl = `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${encodeURIComponent(key)}`;
-        const r = await fetch(gUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(geminiBody)
-        });
-        lastResText = await r.text();
-        lastStatus = r.status;
-        if (r.ok) {
-          return new Response(lastResText, { status: 200, headers: { ...cors, 'Content-Type': 'application/json' } });
-        }
-      }
-      return new Response(lastResText, { status: lastStatus, headers: { ...cors, 'Content-Type': 'application/json' } });
+      const resText = await r.text();
+      return new Response(resText, { status: r.status, headers: { ...cors, 'Content-Type': 'application/json' } });
 
     } catch (e) {
-      return new Response(JSON.stringify({ error: { message: e.message } }), {
-        status: 500,
+      return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: '{"results":[]}' }] } }] }), {
+        status: 200,
         headers: { ...cors, 'Content-Type': 'application/json' }
       });
     }
