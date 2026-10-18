@@ -35,7 +35,8 @@ public class MainActivity extends Activity {
 
         "async function callAI(key, payload){" +
         "  var res = await fetch(PROXY_URL + '?key=' + encodeURIComponent(key), { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });" +
-        "  return await res.json();" +
+        "  var text = await res.text();" +
+        "  try { return JSON.parse(text); } catch(err) { throw new Error('Ответ не JSON: ' + text.slice(0, 100)); }" +
         "}" +
 
         "async function runAI(mode){" +
@@ -68,9 +69,10 @@ public class MainActivity extends Activity {
 
         "  if(!questions.length){ activeBtn.textContent = 'Нет вопросов!'; setTimeout(function(){ activeBtn.textContent = origText; }, 2000); return; }" +
 
-        "  var pr = 'Реши тест и верни ТОЛЬКО JSON объект с массивом результатов: [{\"questionIndex\":0,\"correctOptionTexts\":[\"текст правильного варианта\"]}] на основе текста вопроса и вариантов. Вопросы:\\n' + JSON.stringify(questions);" +
+        "  var pr = 'Реши тест и верни ТОЛЬКО валидный JSON объект (без markdown блоков ```json): { \"results\": [{\"questionIndex\":0,\"correctOptionTexts\":[\"текст правильного варианта\"]}] } на основе текста вопроса и вариантов. Вопросы:\\n' + JSON.stringify(questions);" +
         "  try {" +
         "    var data = await callAI(key, { contents:[{parts:[{text:pr}]}] });" +
+        "    if(data.error) throw new Error(data.error);" +
         "    var rawText = data.candidates[0].content.parts[0].text;" +
         "    rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();" +
         "    var parsed = JSON.parse(rawText);" +
@@ -86,7 +88,7 @@ public class MainActivity extends Activity {
         "            } else {" +
         "              var dot = document.createElement('span');" +
         "              dot.className = 'ai-stealth-dot';" +
-        "              dot.style = 'display:inline-block;width:6px;height:6px;border-radius:50%;background:#ff3b30;margin-left:8px;vertical-align:middle;';" +
+        "              dot.style = 'display:inline-block;width:8px;height:8px;border-radius:50%;background:#ff3b30;margin-left:8px;vertical-align:middle;';';" +
         "              parent.appendChild(dot);" +
         "            }" +
         "          }" +
@@ -96,6 +98,7 @@ public class MainActivity extends Activity {
         "    activeBtn.textContent = '✅ Готово';" +
         "    setTimeout(function(){ activeBtn.textContent = origText; }, 2500);" +
         "  } catch(e){" +
+        "    alert('Ошибка ИИ: ' + e.message);" +
         "    activeBtn.textContent = '❌ Ошибка';" +
         "    setTimeout(function(){ activeBtn.textContent = origText; }, 2500);" +
         "  }" +
@@ -126,7 +129,7 @@ public class MainActivity extends Activity {
             }
         });
 
-        webView.loadUrl("https://lk.mpgu.su/account/");
+        webView.loadUrl("[https://lk.mpgu.su/account/](https://lk.mpgu.su/account/)");
     }
 
     @Override
