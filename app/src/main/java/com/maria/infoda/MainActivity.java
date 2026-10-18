@@ -14,95 +14,136 @@ public class MainActivity extends Activity {
     private static final String AI_SCRIPT =
         "(function(){" +
         "if(document.getElementById('m-ai-bar')) return;" +
-        "var PROXY_URL = 'https://proxy.mariya-bulgakova2004.workers.dev';" +
-        
+        "var DEFAULT_PROXY = 'https://proxy.mariya-bulgakova2004.workers.dev';" +
+
         "var bar = document.createElement('div');" +
         "bar.id = 'm-ai-bar';" +
-        "bar.style = 'position:fixed;bottom:16px;left:50%;transform:translateX(-50%);z-index:2147483647;display:flex;gap:10px;';" +
-        "bar.innerHTML = '<button id=\"btn-dots\" style=\"background:#333;color:#fff;border:none;border-radius:20px;padding:10px 18px;font:bold 14px sans-serif;box-shadow:0 4px 12px rgba(0,0,0,0.4);\">· Точки</button>' +" +
-        "'<button id=\"btn-auto\" style=\"background:#0a84ff;color:#fff;border:none;border-radius:20px;padding:10px 18px;font:bold 14px sans-serif;box-shadow:0 4px 12px rgba(0,0,0,0.4);\">⚡ Авто</button>';" +
+        "bar.style = 'position:fixed;bottom:12px;left:50%;transform:translateX(-50%);z-index:2147483647;display:flex;gap:8px;align-items:center;';" +
+        "bar.innerHTML = '<button id=\"btn-cfg\" style=\"background:#2c2c2e;color:#fff;border:1px solid #555;border-radius:50%;width:36px;height:36px;font:15px sans-serif;\">⚙</button>' +" +
+        "'<button id=\"btn-dots\" style=\"background:#2c2c2e;color:#fff;border:1px solid #555;border-radius:18px;padding:8px 16px;font:bold 13px sans-serif;\">· Точки</button>' +" +
+        "'<button id=\"btn-auto\" style=\"background:#0a84ff;color:#fff;border:none;border-radius:18px;padding:8px 16px;font:bold 13px sans-serif;\">⚡ Авто</button>';" +
         "document.body.appendChild(bar);" +
 
-        "var keyBtn = document.createElement('button');" +
-        "keyBtn.innerHTML = '⚙';" +
-        "keyBtn.style = 'position:fixed;bottom:16px;left:16px;z-index:2147483647;background:#333;color:#fff;border:none;border-radius:50%;width:40px;height:40px;font:16px sans-serif;box-shadow:0 2px 8px rgba(0,0,0,0.3);';" +
-        "document.body.appendChild(keyBtn);" +
+        /* Двойной тап в левом нижнем углу — спрятать/показать кнопки */
+        "var hz = document.createElement('div');" +
+        "hz.style = 'position:fixed;bottom:0;left:0;width:45px;height:45px;z-index:2147483646;';" +
+        "var lt = 0; hz.ontouchend = function(){ var n=Date.now(); if(n-lt<350) bar.style.display=(bar.style.display==='none'?'flex':'none'); lt=n; };" +
+        "document.body.appendChild(hz);" +
 
-        "keyBtn.onclick = function(){" +
-        "  var k = prompt('Введи DeepSeek API Key (sk-...):', localStorage.getItem('ds_api_key') || '');" +
-        "  if(k !== null) localStorage.setItem('ds_api_key', k.trim());" +
+        "document.getElementById('btn-cfg').onclick = function(){" +
+        "  var k = prompt('1. API Ключ (sk-... от DeepSeek ИЛИ AIza... от Gemini для картинок):', localStorage.getItem('ai_key') || '');" +
+        "  if(k !== null) localStorage.setItem('ai_key', k.trim());" +
+        "  var p = prompt('2. Адрес твоего воркера Cloudflare:', localStorage.getItem('ai_proxy') || DEFAULT_PROXY);" +
+        "  if(p !== null) localStorage.setItem('ai_proxy', p.trim().replace(/\\/$/, ''));" +
         "};" +
 
-        "async function callAI(key, payload){" +
-        "  var res = await fetch(PROXY_URL + '?key=' + encodeURIComponent(key), { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });" +
-        "  var text = await res.text();" +
-        "  try { return JSON.parse(text); } catch(err) { throw new Error('Ответ не JSON: ' + text.slice(0, 100)); }" +
+        /* Конвертация картинок-формул МПГУ в Base64 */
+        "function imgToB64(img){" +
+        "  try {" +
+        "    var c = document.createElement('canvas');" +
+        "    c.width = img.naturalWidth || img.width || 200;" +
+        "    c.height = img.naturalHeight || img.height || 60;" +
+        "    var ctx = c.getContext('2d');" +
+        "    ctx.fillStyle = '#FFFFFF';" +
+        "    ctx.fillRect(0, 0, c.width, c.height);" +
+        "    ctx.drawImage(img, 0, 0);" +
+        "    return c.toDataURL('image/png').split(',')[1];" +
+        "  } catch(e){ return null; }" +
         "}" +
 
         "async function runAI(mode){" +
-        "  var key = localStorage.getItem('ds_api_key');" +
-        "  if(!key){ keyBtn.click(); key = localStorage.getItem('ds_api_key'); if(!key) return; }" +
-        
-        "  var activeBtn = mode === 'auto' ? document.getElementById('btn-auto') : document.getElementById('btn-dots');" +
-        "  var origText = activeBtn.textContent;" +
-        "  activeBtn.textContent = 'Думаю...';" +
-        
+        "  var key = localStorage.getItem('ai_key');" +
+        "  if(!key){ document.getElementById('btn-cfg').click(); key = localStorage.getItem('ai_key'); if(!key) return; }" +
+        "  var proxy = localStorage.getItem('ai_proxy') || DEFAULT_PROXY;" +
+        "  var isGemini = key.indexOf('AIza') === 0;" +
+
+        "  var btn = mode === 'auto' ? document.getElementById('btn-auto') : document.getElementById('btn-dots');" +
+        "  var orig = btn.textContent; btn.textContent = '…';" +
         "  document.querySelectorAll('.ai-stealth-dot').forEach(function(e){ e.remove(); });" +
 
-        "  var questions = [];" +
-        "  var blocks = document.querySelectorAll('.que, .question, [class*=\"question\"], .card, fieldset');" +
-        "  if(!blocks.length) blocks = [document.body];" +
+        "  var qBlocks = document.querySelectorAll('.que');" +
+        "  if(!qBlocks.length){ alert('На этой странице не найдено вопросов (.que)'); btn.textContent = orig; return; }" +
 
-        "  blocks.forEach(function(q, qi){" +
-        "    var qText = q.innerText.trim();" +
-        "    var opts = [];" +
-        "    q.querySelectorAll('input[type=\"radio\"], input[type=\"checkbox\"], label, .answer, .option').forEach(function(el, oi){" +
-        "      var inp = el.tagName === 'INPUT' ? el : el.querySelector('input');" +
-        "      if(inp && inp.type !== 'hidden'){" +
-        "        var id = 'q'+qi+'_opt'+oi;" +
-        "        inp.setAttribute('data-ai-id', id);" +
-        "        opts.push({ id:id, text:el.innerText.trim() });" +
-        "      }" +
+        "  var geminiParts = [{ text: 'Ты решаешь тест по математике/теории вероятностей в Moodle. Для каждого вопроса выбери правильные id вариантов. Если inputType=radio — ровно один id, если checkbox — все верные id. Верни ТОЛЬКО JSON формата: {\"results\":[{\"questionIndex\":0,\"correctIds\":[\"q0_opt0\"]}]}\\n' }];" +
+        "  var dsQuestions = [];" +
+
+        "  qBlocks.forEach(function(q, qi){" +
+        "    var qEl = q.querySelector('.qtext') || q;" +
+        "    var qText = qEl.innerText.replace(/\\s+/g, ' ').trim();" +
+        "    geminiParts.push({ text: '\\n=== Вопрос ' + qi + ': ' + qText + ' ===\\n' });" +
+        "    qEl.querySelectorAll('img').forEach(function(im){" +
+        "      var b64 = isGemini ? imgToB64(im) : null;" +
+        "      if(b64) geminiParts.push({ inlineData: { mimeType: 'image/png', data: b64 } });" +
+        "      else qText += ' [Формула-картинка: ' + im.src.split('/').pop() + ']';" +
         "    });" +
-        "    if(qText && opts.length > 0) questions.push({ questionIndex:qi, text:qText.slice(0, 1000), options:opts });" +
+
+        "    var opts = [];" +
+        "    q.querySelectorAll('.answer .r0, .answer .r1').forEach(function(row, oi){" +
+        "      var inp = row.querySelector('input[type=\"radio\"], input[type=\"checkbox\"]');" +
+        "      if(!inp) return;" +
+        "      var id = 'q' + qi + '_opt' + oi;" +
+        "      inp.setAttribute('data-ai-id', id);" +
+        "      var lbl = row.querySelector('[data-region=\"answer-label\"]') || row;" +
+        "      var oText = lbl.innerText.replace(/\\s+/g, ' ').trim();" +
+        "      geminiParts.push({ text: 'Вариант ' + id + ' (' + inp.type + '): ' + oText });" +
+        "      lbl.querySelectorAll('img').forEach(function(im){" +
+        "        var b64 = isGemini ? imgToB64(im) : null;" +
+        "        if(b64) geminiParts.push({ inlineData: { mimeType: 'image/png', data: b64 } });" +
+        "        else oText += ' [Картинка формулы]';" +
+        "      });" +
+        "      opts.push({ id: id, inputType: inp.type, text: oText });" +
+        "    });" +
+        "    dsQuestions.push({ questionIndex: qi, question: qText, options: opts });" +
         "  });" +
 
-        "  if(!questions.length){ activeBtn.textContent = 'Нет вопросов!'; setTimeout(function(){ activeBtn.textContent = origText; }, 2000); return; }" +
-
-        "  var pr = 'Реши тест и верни ТОЛЬКО валидный JSON объект (без markdown блоков ```json): { \"results\": [{\"questionIndex\":0,\"correctOptionTexts\":[\"текст правильного варианта\"]}] } на основе текста вопроса и вариантов. Вопросы:\\n' + JSON.stringify(questions);" +
         "  try {" +
-        "    var data = await callAI(key, { contents:[{parts:[{text:pr}]}] });" +
-        "    if(data.error) throw new Error(data.error);" +
-        "    var rawText = data.candidates[0].content.parts[0].text;" +
-        "    rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();" +
-        "    var parsed = JSON.parse(rawText);" +
-        "    var res = Array.isArray(parsed) ? parsed : (parsed.results || parsed.answers || []);" +
-        "" +
-        "    res.forEach(function(r){" +
-        "      (r.correctOptionTexts||[]).forEach(function(ansText){" +
-        "        document.querySelectorAll('input[data-ai-id]').forEach(function(inp){" +
-        "          var parent = inp.closest('label') || inp.parentElement || inp.closest('.answer');" +
-        "          if(parent && (parent.innerText.includes(ansText) || ansText.includes(parent.innerText.trim()))){" +
-        "            if(mode === 'auto'){" +
-        "              if(!inp.checked){ inp.click(); inp.dispatchEvent(new Event('change',{bubbles:true})); }" +
-        "            } else {" +
-        "              var dot = document.createElement('span');" +
-        "              dot.className = 'ai-stealth-dot';" +
-        "              dot.style = 'display:inline-block;width:8px;height:8px;border-radius:50%;background:#ff3b30;margin-left:8px;vertical-align:middle;';';" +
-        "              parent.appendChild(dot);" +
-        "            }" +
-        "          }" +
-        "        });" +
+        "    var bodyObj = isGemini ? " +
+        "      { contents: [{ parts: geminiParts }], generationConfig: { responseMimeType: 'application/json', temperature: 0.1 } } :" +
+        "      { model: 'deepseek-chat', messages: [{ role: 'system', content: 'Реши тест Moodle. Верни ТОЛЬКО JSON: {\"results\":[{\"questionIndex\":0,\"correctIds\":[\"q0_opt0\"]}]}' }, { role: 'user', content: JSON.stringify(dsQuestions) }], response_format: { type: 'json_object' }, temperature: 0.1 };" +
+
+        "    var resp = await fetch(proxy + '?key=' + encodeURIComponent(key), {" +
+        "      method: 'POST'," +
+        "      headers: { 'Content-Type': 'text/plain;charset=utf-8' }," +
+        "      body: JSON.stringify(bodyObj)" +
+        "    });" +
+
+        "    var data = await resp.json();" +
+        "    if(!resp.ok || data.error){" +
+        "      var msg = (data.error && data.error.message) ? data.error.message : JSON.stringify(data);" +
+        "      throw new Error(msg);" +
+        "    }" +
+
+        "    var raw = isGemini ? data.candidates[0].content.parts[0].text : data.choices[0].message.content;" +
+        "    raw = raw.replace(/```json/g, '').replace(/```/g, '').trim();" +
+        "    var parsed = JSON.parse(raw);" +
+        "    var list = parsed.results || parsed.answers || [];" +
+
+        "    list.forEach(function(r){" +
+        "      var cIds = r.correctIds || [];" +
+        "      cIds.forEach(function(id){" +
+        "        var inp = document.querySelector('[data-ai-id=\"' + id + '\"]');" +
+        "        if(!inp) return;" +
+        "        var row = inp.closest('.r0, .r1') || inp.parentElement;" +
+        "        if(mode === 'auto'){" +
+        "          if(inp.disabled) row.style.outline = '1px dashed #30d158';" +
+        "          else if(!inp.checked){ inp.click(); inp.dispatchEvent(new Event('change', {bubbles:true})); }" +
+        "        } else {" +
+        "          var dot = document.createElement('span');" +
+        "          dot.className = 'ai-stealth-dot';" +
+        "          dot.style = 'display:inline-block;width:5px;height:5px;border-radius:50%;background:#777;opacity:0.65;margin-left:8px;align-self:center;flex-shrink:0;';" +
+        "          row.appendChild(dot);" +
+        "        }" +
         "      });" +
         "    });" +
-        "    activeBtn.textContent = '✅ Готово';" +
-        "    setTimeout(function(){ activeBtn.textContent = origText; }, 2500);" +
+
+        "    btn.textContent = '✓';" +
+        "    setTimeout(function(){ btn.textContent = orig; }, 1800);" +
         "  } catch(e){" +
-        "    alert('Ошибка ИИ: ' + e.message);" +
-        "    activeBtn.textContent = '❌ Ошибка';" +
-        "    setTimeout(function(){ activeBtn.textContent = origText; }, 2500);" +
+        "    alert('Ошибка: ' + e.message);" +
+        "    btn.textContent = '✕';" +
+        "    setTimeout(function(){ btn.textContent = orig; }, 2000);" +
         "  }" +
-        "};" +
+        "}" +
 
         "document.getElementById('btn-dots').onclick = function(){ runAI('dots'); };" +
         "document.getElementById('btn-auto').onclick = function(){ runAI('auto'); };" +
@@ -129,7 +170,7 @@ public class MainActivity extends Activity {
             }
         });
 
-        webView.loadUrl("[https://lk.mpgu.su/account/](https://lk.mpgu.su/account/)");
+        webView.loadUrl("https://lk.mpgu.su/account/");
     }
 
     @Override
