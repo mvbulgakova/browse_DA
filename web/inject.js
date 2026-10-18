@@ -27,15 +27,21 @@ document.getElementById('btn-cfg').onclick = function(){
   if(p !== null) localStorage.setItem('ai_proxy', p.trim().replace(/\/$/, ''));
 };
 // Конвертация картинок-формул МПГУ в Base64
+// Формулы в Moodle — крошечные картинки (20–40 px): увеличиваем в 3–4 раза с белыми полями,
+// иначе модель не различает степени, индексы и множители в показателях
 function imgToB64(img){
   try {
+    var w = img.naturalWidth || img.width || 200, h = img.naturalHeight || img.height || 60;
+    var scale = Math.max(1, Math.min(4, 160 / h, 1600 / w)), pad = 24;
     var c = document.createElement('canvas');
-    c.width = img.naturalWidth || img.width || 200;
-    c.height = img.naturalHeight || img.height || 60;
+    c.width = Math.round(w * scale) + pad * 2;
+    c.height = Math.round(h * scale) + pad * 2;
     var ctx = c.getContext('2d');
     ctx.fillStyle = '#FFFFFF';
     ctx.fillRect(0, 0, c.width, c.height);
-    ctx.drawImage(img, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(img, pad, pad, Math.round(w * scale), Math.round(h * scale));
     return c.toDataURL('image/png').split(',')[1];
   } catch(e){ return null; }
 }
@@ -410,7 +416,9 @@ async function askAI(keys, parts, accept){
 
 var INSTRUCTION = 'Ты решаешь тест Moodle (математика, теория вероятностей и др.). Для каждого вопроса выбери id правильных вариантов. ' +
   'Если inputType=radio — ровно один id, если checkbox — все верные id. Картинки после текста — формулы к соответствующему вопросу или варианту. ' +
-  'Внимательно прочитай формулы на картинках. Сначала кратко реши каждый вопрос (поле solution: 1–3 строки вычислений), затем сверь результат с вариантами. ' +
+  'Формулы на картинках читай очень внимательно: степени (², ³), коэффициенты в знаменателях (σ² или 2σ²), пределы интегралов, множители перед корнем. ' +
+  'В поле solution СНАЧАЛА перепиши формулу вопроса и формулы ВСЕХ вариантов в LaTeX (по одной на строку, с id), ' +
+  'потом реши задачу по стандартным определениям и формулам и сравни свой результат с каждым переписанным вариантом символ за символом. ' +
   'correctIds никогда не оставляй пустым — если не уверена, выбери наиболее вероятный вариант. ' +
   'Верни ТОЛЬКО JSON: {"results":[{"questionIndex":0,"solution":"...","correctIds":["q0_opt0"]}]}\n';
 
@@ -432,7 +440,8 @@ async function runAI(mode){
   function addImages(el, label){
     el.querySelectorAll('img').forEach(function(im){
       var b64 = withImages ? imgToB64(im) : null;
-      if(b64){ parts.push({ text: label + ':' }); parts.push({ inlineData: { mimeType: 'image/png', data: b64 } }); }
+      var alt = clean(im.alt || im.title || '');
+      if(b64){ parts.push({ text: label + (alt ? ' (подпись картинки: ' + alt + ')' : '') + ':' }); parts.push({ inlineData: { mimeType: 'image/png', data: b64 } }); }
       else parts.push({ text: label + ': [картинка-формула ' + clean(im.alt || (im.src || '').split('/').pop()) + ']' });
     });
   }
