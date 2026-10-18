@@ -7,6 +7,7 @@ var bar = document.createElement('div');
 bar.id = 'm-ai-bar';
 bar.style = 'position:fixed;bottom:12px;left:50%;transform:translateX(-50%);z-index:2147483647;display:flex;gap:8px;align-items:center;';
 bar.innerHTML = '<button id="btn-cfg" style="background:#2c2c2e;color:#fff;border:1px solid #555;border-radius:50%;width:36px;height:36px;font:15px sans-serif;">⚙</button>' +
+'<button id="btn-g" style="background:#2c2c2e;color:#fff;border:1px solid #555;border-radius:50%;width:36px;height:36px;font:bold 15px sans-serif;">G</button>' +
 '<button id="btn-dots" style="background:#2c2c2e;color:#fff;border:1px solid #555;border-radius:18px;padding:8px 16px;font:bold 13px sans-serif;">· Точки</button>' +
 '<button id="btn-auto" style="background:#0a84ff;color:#fff;border:none;border-radius:18px;padding:8px 16px;font:bold 13px sans-serif;">⚡ Авто</button>';
 document.body.appendChild(bar);
@@ -17,8 +18,8 @@ hz.style = 'position:fixed;bottom:0;left:0;width:45px;height:45px;z-index:214748
 var lt = 0; hz.ontouchend = function(){ var n=Date.now(); if(n-lt<350) bar.style.display=(bar.style.display==='none'?'flex':'none'); lt=n; };
 document.body.appendChild(hz);
 document.getElementById('btn-cfg').onclick = function(){
-  var k = prompt('1. API-ключи через запятую (AIza... / AQ.... = Gemini, sk-... = DeepSeek). Пробуются по очереди:', localStorage.getItem('ai_key') || '');
-  if(k !== null) localStorage.setItem('ai_key', k.trim());
+  var k = prompt('1. API-ключи через запятую, пробуются по очереди.\nGemini: AIza…/AQ.…  Groq: gsk_…  OpenRouter: sk-or-…  Mistral: 32 символа  Cerebras: csk-…  DeepSeek: sk-…', loadKeyString());
+  if(k !== null) saveKeyString(k.trim());
   var p = prompt('2. Адрес твоего воркера Cloudflare:', localStorage.getItem('ai_proxy') || DEFAULT_PROXY);
   if(p !== null) localStorage.setItem('ai_proxy', p.trim().replace(/\/$/, ''));
 };
@@ -55,9 +56,10 @@ function pickError(d){
 }
 // Разбор JSON от модели: срезаем ```json-обёртки и лишний текст вокруг объекта
 function parseLoose(t){
-  t = String(t || '').replace(/```json/gi, '').replace(/```/g, '').trim();
+  t = String(t || '').replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/```json/gi, '').replace(/```/g, '').trim();
   try { return JSON.parse(t); } catch(e){}
-  var a = t.indexOf('{'), b = t.lastIndexOf('}');
+  var ri = t.lastIndexOf('"results"');
+  var a = ri > 0 ? t.lastIndexOf('{', ri) : t.indexOf('{'), b = t.lastIndexOf('}');
   if(a >= 0 && b > a){ try { return JSON.parse(t.slice(a, b + 1)); } catch(e){} }
   return null;
 }
@@ -68,14 +70,31 @@ function hash(s){ var h = 5381; for(var i = 0; i < s.length; i++) h = ((h << 5) 
 function short(s){ return String(s || '').replace(/\s+/g, ' ').slice(0, 220); }
 
 // Несколько ключей можно ввести через запятую/пробел — они пробуются по очереди
-function getKeys(){ return (localStorage.getItem('ai_key') || '').split(/[\s,;]+/).filter(Boolean); }
+// Ключи хранятся в самом приложении (одни на все сайты и не пропадают); без нового APK — в localStorage сайта
+function bridge(){ try { return window.InfoDa && typeof window.InfoDa.getKeys === 'function' ? window.InfoDa : null; } catch(e){ return null; } }
+function loadKeyString(){
+  var b = bridge(), local = '';
+  try { local = localStorage.getItem('ai_key') || ''; } catch(e){}
+  if(!b) return local;
+  var s = '';
+  try { s = String(b.getKeys() || ''); } catch(e){}
+  if(s === '__denied__') return local;
+  if(!s && local){ try { b.setKeys(local); } catch(e){} s = local; }
+  return s;
+}
+function saveKeyString(v){
+  var b = bridge(), ok = false;
+  if(b){ try { var res = b.setKeys(v); ok = res === true || String(res) === 'true'; } catch(e){} }
+  try { if(ok) localStorage.removeItem('ai_key'); else localStorage.setItem('ai_key', v); } catch(e){}
+}
+function getKeys(){ return loadKeyString().split(/[\s,;]+/).filter(Boolean); }
 function keyTag(key){ return key.slice(-6); }
 
 // Модели с исчерпанной квотой запоминаются до времени сброса, чтобы не тратить на них время
 function isBlocked(tag, model){ return (lsGet('ai_blocked', {})[tag + '|' + model] || 0) > Date.now(); }
 function block(tag, model, msg, defMs){
   var ms = defMs || 3600e3;
-  var m = /retry in\s*(?:(\d+)h)?\s*(?:(\d+)m(?!s))?\s*(?:([\d.]+)s)?/i.exec(msg || '');
+  var m = /(?:retry|try again) in\s*(?:(\d+)h)?\s*(?:(\d+)m(?!s))?\s*(?:([\d.]+)s)?/i.exec(msg || '');
   if(m && (m[1] || m[2] || m[3])) ms = ((+m[1] || 0) * 3600 + (+m[2] || 0) * 60 + (+m[3] || 0)) * 1000 + 5000;
   var b = lsGet('ai_blocked', {}), now = Date.now();
   Object.keys(b).forEach(function(k){ if(b[k] < now) delete b[k]; });
@@ -153,15 +172,112 @@ async function callGemini(key, model, parts){
   return { status: r.status, text: text, error: err };
 }
 
+// Тип ключа по префиксу
+function provider(key){
+  if(/^(AIza|AQ\.)/.test(key)) return 'gemini';
+  if(/^sk-or-/.test(key)) return 'openrouter';
+  if(/^gsk_/.test(key)) return 'groq';
+  if(/^csk-/.test(key)) return 'cerebras';
+  if(/^sk-/.test(key)) return 'deepseek';
+  if(/^[A-Za-z0-9]{32}$/.test(key)) return 'mistral';
+  return 'gemini';
+}
+// OpenAI-совместимые API (все разрешают запросы прямо из браузера)
+var OAI = {
+  groq: { name: 'Groq', base: 'https://api.groq.com/openai/v1',
+    fallback: [{ id: 'meta-llama/llama-4-scout-17b-16e-instruct', vision: true }, { id: 'openai/gpt-oss-120b' }, { id: 'llama-3.3-70b-versatile' }] },
+  openrouter: { name: 'OpenRouter', base: 'https://openrouter.ai/api/v1', fallback: [] },
+  mistral: { name: 'Mistral', base: 'https://api.mistral.ai/v1',
+    fallback: [{ id: 'mistral-medium-latest', vision: true }, { id: 'mistral-small-latest', vision: true }] },
+  cerebras: { name: 'Cerebras', base: 'https://api.cerebras.ai/v1', fallback: [{ id: 'gpt-oss-120b' }, { id: 'llama-3.3-70b' }] }
+};
+function sizeOf(id){ var m = /(\d+)b\b/i.exec(id); return m ? +m[1] : 0; }
+async function getOaiModels(prov, key){
+  var P = OAI[prov], ck = 'ai_models_' + prov + keyTag(key), cache = lsGet(ck, null);
+  if(cache && cache.ts > Date.now() - 86400e3 && cache.list && cache.list.length) return cache.list;
+  var list = [];
+  try {
+    var r = await fetch(P.base + '/models', { headers: { Authorization: 'Bearer ' + key } });
+    var d = await r.json(), arr = d && Array.isArray(d.data) ? d.data : [];
+    if(prov === 'openrouter'){
+      list = arr.filter(function(m){ return m && m.id && (/:free$/.test(m.id) || (m.pricing && +m.pricing.prompt === 0 && +m.pricing.completion === 0 && m.id !== 'openrouter/auto')); })
+        .map(function(m){ var mods = m.architecture && m.architecture.input_modalities || []; return { id: m.id, vision: mods.indexOf('image') >= 0, ctx: m.context_length || 0 }; })
+        .sort(function(a, b){ return (b.vision - a.vision) || (b.ctx - a.ctx); });
+    } else if(prov === 'mistral'){
+      list = arr.filter(function(m){ return m && m.id && (!m.capabilities || m.capabilities.completion_chat) && !/embed|moderation|ocr|transcri|voxtral|codestral|devstral|saba/.test(m.id) && /latest$/.test(m.id); })
+        .map(function(m){ return { id: m.id, vision: !!(m.capabilities && m.capabilities.vision), w: /large|medium|magistral-medium/.test(m.id) ? 2 : /small|magistral-small/.test(m.id) ? 1 : 0 }; })
+        .sort(function(a, b){ return (b.vision - a.vision) || (b.w - a.w); });
+    } else {
+      list = arr.filter(function(m){ return m && m.id && m.active !== false && !/whisper|tts|guard|playai|orpheus|distil|compound|allam|embed/i.test(m.id); })
+        .map(function(m){ return { id: m.id, vision: /llama-4|vision|scout|maverick|-vl\b|vl-/i.test(m.id) }; })
+        .sort(function(a, b){ return (b.vision - a.vision) || (sizeOf(b.id) - sizeOf(a.id)); });
+    }
+  } catch(e){}
+  if(!list.length) return P.fallback;
+  lsSet(ck, { ts: Date.now(), list: list.slice(0, 15) });
+  return list;
+}
+function partsToText(parts){
+  return parts.map(function(p){ return typeof p.text === 'string' ? p.text : '[картинка-формула]'; }).join('\n');
+}
+async function callOai(prov, key, model, parts, useImg){
+  var content = useImg ? parts.map(function(p){
+    return p.inlineData ? { type: 'image_url', image_url: { url: 'data:' + p.inlineData.mimeType + ';base64,' + p.inlineData.data } } : { type: 'text', text: p.text };
+  }) : partsToText(parts);
+  var headers = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key };
+  if(prov === 'openrouter') headers['X-Title'] = 'InfoDa';
+  var r = await fetch(OAI[prov].base + '/chat/completions', {
+    method: 'POST', headers: headers,
+    body: JSON.stringify({ model: model, messages: [{ role: 'user', content: content }], temperature: 0.1 })
+  });
+  var raw = await r.text(), d = null;
+  try { d = JSON.parse(raw); } catch(e){}
+  var err = pickError(d) || (r.ok ? '' : 'HTTP ' + r.status + ': ' + short(raw));
+  var text = err ? '' : pickText(d);
+  if(!err && !text) err = 'пустой ответ';
+  return { status: r.status, text: text, error: err };
+}
+async function askOai(prov, key, parts){
+  var P = OAI[prov], tag = keyTag(key), list = await getOaiModels(prov, key);
+  var hasImg = parts.some(function(p){ return p.inlineData; });
+  var tries = 0, limited = [], other = [];
+  for(var i = 0; i < list.length && tries < 6; i++){
+    var m = list[i];
+    if(isBlocked(tag, m.id)){ limited.push(m.id); continue; }
+    tries++;
+    var useImg = hasImg && !!m.vision, r;
+    try {
+      r = await callOai(prov, key, m.id, parts, useImg);
+      // Модель не принимает картинки — повторяем только с текстом
+      if(!r.text && useImg && r.status === 400 && /image|vision|multimodal|content/i.test(r.error)) r = await callOai(prov, key, m.id, parts, false);
+    } catch(e){ other.push('сеть: ' + short(e.message)); break; }
+    if(r.text) return { text: r.text, model: P.name + ' ' + m.id };
+    var msg = r.error;
+    if(/free-models-per-day/i.test(msg)){ block(tag, '*', '', 6 * 3600e3); limited.push('дневной лимит бесплатных моделей'); break; }
+    if(r.status === 429 || /quota|rate limit|exhausted/i.test(msg)){ block(tag, m.id, msg); limited.push(m.id); continue; }
+    if(r.status === 404 || /not found|does not exist|decommission|deprecat|not supported/i.test(msg)){ block(tag, m.id, '', 86400e3); continue; }
+    if(r.status === 401 || r.status === 403 || /invalid api key|unauthori|no auth|api key/i.test(msg)){ block(tag, '*', '', 600e3); other.push('ключ не принят: ' + short(msg)); break; }
+    other.push(m.id + ': ' + short(msg));
+  }
+  var line = '';
+  if(limited.length) line += 'лимиты исчерпаны (' + limited.join(', ') + ')';
+  if(other.length) line += (line ? '; ' : '') + other.join('; ');
+  throw new Error(line || 'нет доступных моделей');
+}
+
 async function askAI(keys, parts){
   var errors = [];
   for(var ki = 0; ki < keys.length; ki++){
-    var key = keys[ki], tag = keyTag(key), name = 'Ключ …' + tag;
-    if(key.indexOf('sk-') === 0){
+    var key = keys[ki], tag = keyTag(key), name = 'Ключ …' + tag, prov = provider(key);
+    if(prov === 'deepseek'){
       try { return await callProxy(key, parts); } catch(e){ errors.push(name + ' (DeepSeek): ' + short(e.message)); }
       continue;
     }
-    if(isBlocked(tag, '*')){ errors.push(name + ': ключ не принят Google (пропущен)'); continue; }
+    if(isBlocked(tag, '*')){ errors.push(name + ': временно пропущен (ключ не принят или дневной лимит)'); continue; }
+    if(OAI[prov]){
+      try { return await askOai(prov, key, parts); } catch(e){ errors.push(name + ' (' + OAI[prov].name + '): ' + short(e.message)); }
+      continue;
+    }
     var models = await getModels(key), tries = 0, limited = [], other = [];
     for(var mi = 0; mi < models.length && tries < 8; mi++){
       var model = models[mi];
@@ -181,7 +297,7 @@ async function askAI(keys, parts){
       if(r.status === 401 || r.status === 403 || /api key|api_key|permission/i.test(msg)){ block(tag, '*', '', 600e3); other.push('ключ не принят: ' + short(msg)); break; }
       other.push(model + ': ' + short(msg));
     }
-    var line = name + ': ';
+    var line = name + ' (Gemini): ';
     if(limited.length) line += 'лимиты исчерпаны (' + limited.join(', ') + ')';
     if(other.length) line += (limited.length ? '; ' : '') + other.join('; ');
     if(!limited.length && !other.length) line += 'нет доступных моделей';
@@ -198,7 +314,7 @@ async function runAI(mode){
   var keys = getKeys();
   if(!keys.length){ document.getElementById('btn-cfg').click(); keys = getKeys(); if(!keys.length) return; }
 // sk- = DeepSeek (только текст), всё остальное (AIza..., AQ. ...) = Gemini (текст + картинки)
-  var withImages = keys.some(function(k){ return k.indexOf('sk-') !== 0; });
+  var withImages = keys.some(function(k){ return provider(k) !== 'deepseek'; });
   var btn = mode === 'auto' ? document.getElementById('btn-auto') : document.getElementById('btn-dots');
   var orig = btn.getAttribute('data-orig') || btn.textContent;
   btn.setAttribute('data-orig', orig);
@@ -277,6 +393,48 @@ async function runAI(mode){
     setTimeout(function(){ btn.textContent = orig; }, 2000);
   }
 }
+
+// Кнопка G: копирует вопрос с вариантами и открывает поиск Google в режиме ИИ (во внешнем браузере, тест не закрывается)
+function altOf(el){ return [].map.call(el.querySelectorAll('img'), function(im){ return clean(im.alt || im.title || ''); }).filter(Boolean).join(' '); }
+function questionsAsText(){
+  var out = [];
+  document.querySelectorAll('.que').forEach(function(q){
+    var qEl = q.querySelector('.qtext') || q;
+    var t = clean(qEl.innerText), a = altOf(qEl);
+    if(a) t += ' ' + a;
+    else if(qEl.querySelector('img')) t += ' (в вопросе есть формула-картинка)';
+    var opts = [];
+    q.querySelectorAll('.answer .r0, .answer .r1').forEach(function(row){
+      var inp = row.querySelector('input[type="radio"], input[type="checkbox"]');
+      if(!inp) return;
+      var lbl = row.querySelector('[data-region="answer-label"]') || row;
+      var o = clean(lbl.innerText), oa = altOf(lbl);
+      opts.push(String.fromCharCode(1072 + opts.length) + ') ' + clean(o + ' ' + oa));
+    });
+    var multi = !!q.querySelector('.answer input[type="checkbox"]');
+    out.push(t + '\nВарианты: ' + opts.join('; ') + '\n' + (multi ? 'Какие варианты правильные (может быть несколько)?' : 'Какой вариант правильный?'));
+  });
+  return out.join('\n\n');
+}
+function copyText(t){
+  var b = bridge();
+  if(b && typeof b.copy === 'function'){ try { b.copy(t); return true; } catch(e){} }
+  try {
+    var ta = document.createElement('textarea');
+    ta.value = t; ta.style = 'position:fixed;top:-1000px;opacity:0;';
+    document.body.appendChild(ta); ta.select();
+    var ok = document.execCommand('copy'); ta.remove(); return ok;
+  } catch(e){ return false; }
+}
+document.getElementById('btn-g').onclick = function(){
+  var t = questionsAsText();
+  if(!t){ alert('На этой странице не найдено вопросов (.que)'); return; }
+  copyText(t);
+  var url = 'https://www.google.com/search?udm=50&q=' + encodeURIComponent(t.slice(0, 1800));
+  var b = bridge();
+  if(b && typeof b.openExternal === 'function') b.openExternal(url);
+  else alert('Вопрос скопирован. Откройте Google и вставьте его.\n(Чтобы кнопка сама открывала Google, обновите приложение.)');
+};
 document.getElementById('btn-dots').onclick = function(){ runAI('dots'); };
 document.getElementById('btn-auto').onclick = function(){ runAI('auto'); };
 })();
