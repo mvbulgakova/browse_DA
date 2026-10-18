@@ -18,7 +18,7 @@ hz.style = 'position:fixed;bottom:0;left:0;width:45px;height:45px;z-index:214748
 var lt = 0; hz.ontouchend = function(){ var n=Date.now(); if(n-lt<350) bar.style.display=(bar.style.display==='none'?'flex':'none'); lt=n; };
 document.body.appendChild(hz);
 document.getElementById('btn-cfg').onclick = function(){
-  var k = prompt('1. API-ключи через запятую, пробуются по очереди.\nGemini: AIza…/AQ.…  Groq: gsk_…  OpenRouter: sk-or-…  Mistral: mstrl_… или 32 символа  Cerebras: csk-…  DeepSeek: sk-…', loadKeyString());
+  var k = prompt('1. API-ключи через запятую, пробуются по очереди.\nGemini: AIza…/AQ.…  GitHub: github_pat_…/ghp_…  Mistral: mstrl_…  OpenRouter: sk-or-…  HuggingFace: hf_…  NVIDIA: nvapi-…  Groq: gsk_…  Cerebras: csk-…  DeepSeek: sk-…', loadKeyString());
   if(k !== null){
     saveKeyString(k.trim());
     if(k.trim()) checkKeys(getKeys());
@@ -120,7 +120,7 @@ async function getModels(key){
   var tag = keyTag(key), cache = lsGet('ai_models_' + tag, null);
   if(cache && cache.ts > Date.now() - 86400e3 && cache.list && cache.list.length) return cache.list;
   try {
-    var r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000&key=' + encodeURIComponent(key));
+    var r = await tfetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000&key=' + encodeURIComponent(key), {}, 15000);
     var d = await r.json();
     var list = (d && Array.isArray(d.models) ? d.models : [])
       .filter(function(m){ return m && Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.indexOf('generateContent') >= 0; })
@@ -140,7 +140,8 @@ async function getModels(key){
 // Запрос через воркер Cloudflare (нужен для DeepSeek и как запасной путь)
 async function callProxy(key, parts){
   var proxy = localStorage.getItem('ai_proxy') || DEFAULT_PROXY;
-  var resp = await fetch(proxy + '?key=' + encodeURIComponent(key), {
+  tick();
+  var resp = await tfetch(proxy + '?key=' + encodeURIComponent(key), {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
     body: JSON.stringify({ parts: parts })
@@ -161,9 +162,10 @@ async function callGemini(key, model, parts){
     contents: [{ role: 'user', parts: parts }],
     generationConfig: gemma ? { temperature: 0.1 } : { responseMimeType: 'application/json', temperature: 0.1 }
   };
-  var r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + encodeURIComponent(key), {
+  tick();
+  var r = await tfetch('https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + encodeURIComponent(key), {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
-  });
+  }, 75000);
   var raw = await r.text(), d = null;
   try { d = JSON.parse(raw); } catch(e){}
   var err = pickError(d) || (r.ok ? '' : 'HTTP ' + r.status + ': ' + short(raw));
@@ -183,8 +185,8 @@ async function checkKeys(keys){
     var head = name + ' …' + keyTag(key) + ': ';
     try {
       if(prov === 'deepseek'){ lines.push(head + 'проверяется только при запросе (через воркер)'); continue; }
-      var url = prov === 'gemini' ? 'https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000&key=' + encodeURIComponent(key) : OAI[prov].base + '/models';
-      var r = await fetch(url, prov === 'gemini' ? {} : { headers: { Authorization: 'Bearer ' + key } });
+      var url = prov === 'gemini' ? 'https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000&key=' + encodeURIComponent(key) : (OAI[prov].listUrl || OAI[prov].base + '/models');
+      var r = prov === 'gemini' ? await tfetch(url, {}, 15000) : await httpFor(OAI[prov])(url, { headers: { Authorization: 'Bearer ' + key, Accept: 'application/json' } }, 15000);
       var raw = await r.text(), d = null;
       try { d = JSON.parse(raw); } catch(e){}
       if(!r.ok){ lines.push(head + '✕ ' + (pickError(d) || ('HTTP ' + r.status + ' ' + short(raw)))); continue; }
@@ -196,11 +198,47 @@ async function checkKeys(keys){
   }
   alert('Проверка ключей:\n' + lines.join('\n'));
 }
+// fetch с ограничением по времени — запрос не может «зависнуть» навсегда
+function tfetch(url, opts, ms){
+  opts = opts || {};
+  var ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  if(ctl) opts.signal = ctl.signal;
+  var timer = setTimeout(function(){ if(ctl) ctl.abort(); }, ms || 60000);
+  return fetch(url, opts).then(function(r){ clearTimeout(timer); return r; }, function(e){
+    clearTimeout(timer);
+    throw new Error(e && e.name === 'AbortError' ? 'нет ответа за ' + Math.round((ms || 60000) / 1000) + ' с' : (e && e.message) || String(e));
+  });
+}
+// Запрос через приложение (для API без CORS). Возвращает объект, похожий на Response
+var httpSeq = 0, httpWait = {};
+window.__infodaHttp = function(id, status, text){ var w = httpWait[id]; if(w){ delete httpWait[id]; w(status, text); } };
+function nativeFetch(url, opts, ms){
+  var b = bridge();
+  if(!b || typeof b.http !== 'function') return Promise.reject(new Error('нужна новая версия приложения (скачайте APK по ссылке и установите поверх)'));
+  opts = opts || {};
+  return new Promise(function(resolve, reject){
+    var id = 'h' + (++httpSeq);
+    var timer = setTimeout(function(){ delete httpWait[id]; reject(new Error('нет ответа за ' + Math.round((ms || 90000) / 1000) + ' с')); }, ms || 90000);
+    httpWait[id] = function(status, text){
+      clearTimeout(timer);
+      if(!status) return reject(new Error(text || 'сеть'));
+      resolve({ ok: status >= 200 && status < 300, status: status, text: function(){ return Promise.resolve(text); }, json: function(){ return Promise.resolve(JSON.parse(text)); } });
+    };
+    b.http(id, url, opts.method || 'GET', JSON.stringify(opts.headers || {}), opts.body == null ? null : String(opts.body));
+  });
+}
+// Счётчик попыток на кнопке: видно, что работа идёт
+var progressBtn = null, progressN = 0;
+function tick(){ progressN++; if(progressBtn) progressBtn.textContent = '…' + progressN; }
+
 // Тип ключа по префиксу
 function provider(key){
   if(/^(AIza|AQ\.)/.test(key)) return 'gemini';
   if(/^sk-or-/.test(key)) return 'openrouter';
   if(/^gsk_/.test(key)) return 'groq';
+  if(/^(github_pat_|ghp_)/.test(key)) return 'github';
+  if(/^nvapi-/.test(key)) return 'nvidia';
+  if(/^hf_/.test(key)) return 'huggingface';
   if(/^csk-/.test(key)) return 'cerebras';
   if(/^sk-/.test(key)) return 'deepseek';
   if(/^mstrl_/i.test(key) || /^[A-Za-z0-9]{32}$/.test(key)) return 'mistral';
@@ -213,27 +251,43 @@ var OAI = {
   openrouter: { name: 'OpenRouter', base: 'https://openrouter.ai/api/v1', fallback: [] },
   mistral: { name: 'Mistral', base: 'https://api.mistral.ai/v1',
     fallback: [{ id: 'mistral-medium-latest', vision: true }, { id: 'mistral-small-latest', vision: true }] },
-  cerebras: { name: 'Cerebras', base: 'https://api.cerebras.ai/v1', fallback: [{ id: 'gpt-oss-120b' }, { id: 'llama-3.3-70b' }] }
+  cerebras: { name: 'Cerebras', base: 'https://api.cerebras.ai/v1', fallback: [{ id: 'gpt-oss-120b' }, { id: 'llama-3.3-70b' }] },
+  // GitHub Models: GPT-4.1/GPT-4o по токену GitHub; без CORS — запросы идут через приложение
+  github: { name: 'GitHub', base: 'https://models.github.ai/inference', listUrl: 'https://models.github.ai/catalog/models', native: true,
+    fallback: [{ id: 'openai/gpt-4.1', vision: true }, { id: 'openai/gpt-4o', vision: true }, { id: 'openai/gpt-4.1-mini', vision: true }, { id: 'openai/gpt-4o-mini', vision: true }] },
+  nvidia: { name: 'NVIDIA', base: 'https://integrate.api.nvidia.com/v1', native: true,
+    fallback: [{ id: 'meta/llama-4-maverick-17b-128e-instruct', vision: true }] },
+  huggingface: { name: 'HuggingFace', base: 'https://router.huggingface.co/v1', fallback: [{ id: 'Qwen/Qwen3-VL-30B-A3B-Instruct', vision: true }] }
 };
+function httpFor(P){ return P.native ? nativeFetch : tfetch; }
 function sizeOf(id){ var m = /(\d+)b\b/i.exec(id); return m ? +m[1] : 0; }
 async function getOaiModels(prov, key){
   var P = OAI[prov], ck = 'ai_models_' + prov + keyTag(key), cache = lsGet(ck, null);
   if(cache && cache.ts > Date.now() - 86400e3 && cache.list && cache.list.length) return cache.list;
   var list = [];
   try {
-    var r = await fetch(P.base + '/models', { headers: { Authorization: 'Bearer ' + key } });
-    var d = await r.json(), arr = d && Array.isArray(d.data) ? d.data : [];
-    if(prov === 'openrouter'){
+    var r = await httpFor(P)(P.listUrl || (P.base + '/models'), { headers: { Authorization: 'Bearer ' + key, Accept: 'application/json' } }, 15000);
+    var d = await r.json(), arr = Array.isArray(d) ? d : d && Array.isArray(d.data) ? d.data : [];
+    if(prov === 'github'){
+      var pref = function(id){ return /gpt-5(?!.*nano)|gpt-4\.1(?!-)|gpt-4o(?!-)/.test(id) ? 3 : /gpt-4\.1-mini|gpt-4o-mini|gpt-5.*mini/.test(id) ? 2 : /llama-4|grok|phi-4-multimodal|mistral-medium/.test(id) ? 1 : 0; };
+      list = arr.filter(function(m){ return m && m.id && (m.supported_input_modalities || []).indexOf('text') >= 0 && !/embed/.test(m.id); })
+        .map(function(m){ return { id: m.id, vision: (m.supported_input_modalities || []).indexOf('image') >= 0, w: pref(m.id) }; })
+        .sort(function(a, b){ return (b.vision - a.vision) || (b.w - a.w); });
+    } else if(prov === 'huggingface'){
+      list = arr.filter(function(m){ return m && m.id && (m.providers || []).some(function(p){ return p.status === 'live'; }); })
+        .map(function(m){ var mods = m.architecture && m.architecture.input_modalities || []; return { id: m.id, vision: mods.indexOf('image') >= 0 }; })
+        .sort(function(a, b){ return (b.vision - a.vision) || (sizeOf(b.id) - sizeOf(a.id)); });
+    } else if(prov === 'openrouter'){
       list = arr.filter(function(m){ return m && m.id && (/:free$/.test(m.id) || (m.pricing && +m.pricing.prompt === 0 && +m.pricing.completion === 0 && m.id !== 'openrouter/auto')); })
         .map(function(m){ var mods = m.architecture && m.architecture.input_modalities || []; return { id: m.id, vision: mods.indexOf('image') >= 0, ctx: m.context_length || 0 }; })
         .sort(function(a, b){ return (b.vision - a.vision) || (b.ctx - a.ctx); });
     } else if(prov === 'mistral'){
       list = arr.filter(function(m){ return m && m.id && (!m.capabilities || m.capabilities.completion_chat) && !/embed|moderation|ocr|transcri|voxtral|codestral|devstral|saba/.test(m.id) && /latest$/.test(m.id); })
-        .map(function(m){ return { id: m.id, vision: !!(m.capabilities && m.capabilities.vision), w: /large|medium|magistral-medium/.test(m.id) ? 2 : /small|magistral-small/.test(m.id) ? 1 : 0 }; })
+        .map(function(m){ return { id: m.id, vision: !!(m.capabilities && m.capabilities.vision), w: /magistral/.test(m.id) ? -1 : /^mistral-medium/.test(m.id) ? 4 : /^mistral-large|^pixtral-large/.test(m.id) ? 3 : /small/.test(m.id) ? 1 : 0 }; })
         .sort(function(a, b){ return (b.vision - a.vision) || (b.w - a.w); });
     } else {
-      list = arr.filter(function(m){ return m && m.id && m.active !== false && !/whisper|tts|guard|playai|orpheus|distil|compound|allam|embed/i.test(m.id); })
-        .map(function(m){ return { id: m.id, vision: /llama-4|vision|scout|maverick|-vl\b|vl-/i.test(m.id) }; })
+      list = arr.filter(function(m){ return m && m.id && m.active !== false && !/whisper|tts|guard|playai|orpheus|distil|compound|allam|embed|rerank|parse|safety|reward|retriever|clip|deplot/i.test(m.id); })
+        .map(function(m){ return { id: m.id, vision: /llama-4|vision|scout|maverick|-vl\b|vl-|multimodal|vila/i.test(m.id) }; })
         .sort(function(a, b){ return (b.vision - a.vision) || (sizeOf(b.id) - sizeOf(a.id)); });
     }
   } catch(e){}
@@ -252,10 +306,11 @@ async function callOai(prov, key, model, parts, useImg){
   }) : partsToText(parts);
   var headers = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key };
   if(prov === 'openrouter') headers['X-Title'] = 'InfoDa';
-  var r = await fetch(OAI[prov].base + '/chat/completions', {
+  tick();
+  var r = await httpFor(OAI[prov])(OAI[prov].base + '/chat/completions', {
     method: 'POST', headers: headers,
     body: JSON.stringify({ model: model, messages: [{ role: 'user', content: content }], temperature: 0.1 })
-  });
+  }, 75000);
   var raw = await r.text(), d = null;
   try { d = JSON.parse(raw); } catch(e){}
   var err = pickError(d) || (r.ok ? '' : 'HTTP ' + r.status + ': ' + short(raw));
@@ -275,7 +330,11 @@ async function askOai(prov, key, parts, accept){
     tries++;
     var r;
     try { r = await callOai(prov, key, m.id, parts, hasImg); }
-    catch(e){ other.push('сеть: ' + short(e.message)); break; }
+    catch(e){
+      // Модель не уложилась во время — пробуем следующую; другая сетевая ошибка — следующий ключ
+      if(/нет ответа/.test(e.message)){ other.push(m.id + ': ' + e.message); continue; }
+      other.push('сеть: ' + short(e.message)); break;
+    }
     if(r.text){
       if(accept(r.text)) return { text: r.text, model: P.name + ' ' + m.id };
       other.push(m.id + ': не выбрала ни одного варианта');
@@ -297,7 +356,7 @@ async function askOai(prov, key, parts, accept){
 }
 
 // Порядок провайдеров: сначала те, что лучше всего читают формулы-картинки
-var PROVIDER_ORDER = { gemini: 0, mistral: 1, openrouter: 2, groq: 3, cerebras: 4, deepseek: 5 };
+var PROVIDER_ORDER = { gemini: 0, github: 1, mistral: 2, openrouter: 3, huggingface: 4, nvidia: 5, groq: 6, cerebras: 7, deepseek: 8 };
 async function askAI(keys, parts, accept){
   var errors = [];
   keys = keys.slice().sort(function(a, b){ return PROVIDER_ORDER[provider(a)] - PROVIDER_ORDER[provider(b)]; });
@@ -324,6 +383,7 @@ async function askAI(keys, parts, accept){
       var r;
       try { r = await callGemini(key, model, parts); }
       catch(e){
+        if(/нет ответа/.test(e.message)){ other.push(model + ': ' + e.message); continue; }
         // Сеть/CORS не пустили напрямую — пробуем через воркер
         try { return await callProxy(key, parts); } catch(e2){ other.push(short(e2.message)); }
         break;
@@ -354,6 +414,7 @@ var INSTRUCTION = 'Ты решаешь тест Moodle (математика, т
   'correctIds никогда не оставляй пустым — если не уверена, выбери наиболее вероятный вариант. ' +
   'Верни ТОЛЬКО JSON: {"results":[{"questionIndex":0,"solution":"...","correctIds":["q0_opt0"]}]}\n';
 
+var inflight = {};
 async function runAI(mode){
   var keys = getKeys();
   if(!keys.length){ document.getElementById('btn-cfg').click(); keys = getKeys(); if(!keys.length) return; }
@@ -400,7 +461,16 @@ async function runAI(mode){
       var pj = parseLoose(t), arr = !pj ? [] : Array.isArray(pj) ? pj : Array.isArray(pj.results) ? pj.results : Array.isArray(pj.answers) ? pj.answers : [];
       return arr.some(function(r){ var c = r && (Array.isArray(r.correctIds) ? r.correctIds : r.correctIds ? [r.correctIds] : []); return c.some(function(id){ return !!document.querySelector('[data-ai-id="' + String(id).replace(/[^\w-]/g, '') + '"]'); }); });
     };
-    var res = hit ? { text: hit.text, model: hit.model + ' (кэш)' } : await askAI(keys, parts, accept);
+    // Одна страница — один запрос: если «Точки» и «Авто» нажаты подряд, обе кнопки ждут один и тот же ответ
+    progressBtn = btn; progressN = 0;
+    var res;
+    if(hit) res = { text: hit.text, model: hit.model + ' (кэш)' };
+    else {
+      if(!inflight[ck]) inflight[ck] = askAI(keys, parts, accept).finally(function(){ delete inflight[ck]; });
+      res = await inflight[ck];
+    }
+    cache = lsGet('ai_cache', {});
+    hit = cache[ck];
     var text = res.text;
     var parsed = parseLoose(text);
     if(!parsed) throw new Error('Модель ' + res.model + ' вернула не JSON: ' + short(text));
