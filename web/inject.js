@@ -203,7 +203,7 @@ async function checkKeys(keys){
     try {
       if(prov === 'deepseek'){ lines.push(head + 'проверяется только при запросе (через воркер)'); continue; }
       var url = prov === 'gemini' ? 'https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000&key=' + encodeURIComponent(key) : (OAI[prov].listUrl || OAI[prov].base + '/models');
-      var r = prov === 'gemini' ? await tfetch(url, {}, 15000) : await httpFor(OAI[prov])(url, { headers: { Authorization: 'Bearer ' + key, Accept: 'application/json' } }, 15000);
+      var r = prov === 'gemini' ? await tfetch(url, {}, 15000) : await httpFor(OAI[prov])(url, { headers: authHeaders(OAI[prov], key) }, 15000);
       var raw = await r.text(), d = null;
       try { d = JSON.parse(raw); } catch(e){}
       if(!r.ok){ lines.push(head + '✕ ' + (pickError(d) || ('HTTP ' + r.status + ' ' + short(raw)))); continue; }
@@ -289,19 +289,26 @@ var OAI = {
   cerebras: { name: 'Cerebras', base: 'https://api.cerebras.ai/v1', fallback: [{ id: 'gpt-oss-120b' }, { id: 'llama-3.3-70b' }] },
   // GitHub Models: GPT-4.1/GPT-4o по токену GitHub; без CORS — запросы идут через приложение
   github: { name: 'GitHub', base: 'https://models.github.ai/inference', listUrl: 'https://models.github.ai/catalog/models', native: true,
+    headers: { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2026-03-10' },
     fallback: [{ id: 'openai/gpt-4.1', vision: true }, { id: 'openai/gpt-4o', vision: true }, { id: 'openai/gpt-4.1-mini', vision: true }, { id: 'openai/gpt-4o-mini', vision: true }] },
   nvidia: { name: 'NVIDIA', base: 'https://integrate.api.nvidia.com/v1', native: true,
     fallback: [{ id: 'meta/llama-4-maverick-17b-128e-instruct', vision: true }] },
   huggingface: { name: 'HuggingFace', base: 'https://router.huggingface.co/v1', fallback: [{ id: 'Qwen/Qwen3-VL-30B-A3B-Instruct', vision: true }] }
 };
 function httpFor(P){ return P.native ? nativeFetch : tfetch; }
+function authHeaders(P, key, extra){
+  var h = { Authorization: 'Bearer ' + key, Accept: 'application/json' };
+  Object.keys(P.headers || {}).forEach(function(k){ h[k] = P.headers[k]; });
+  Object.keys(extra || {}).forEach(function(k){ h[k] = extra[k]; });
+  return h;
+}
 function sizeOf(id){ var m = /(\d+)b\b/i.exec(id); return m ? +m[1] : 0; }
 async function getOaiModels(prov, key){
   var P = OAI[prov], ck = 'ai_models2_' + prov + keyTag(key), cache = lsGet(ck, null);
   if(cache && cache.ts > Date.now() - 86400e3 && cache.list && cache.list.length) return cache.list;
   var list = [];
   try {
-    var r = await httpFor(P)(P.listUrl || (P.base + '/models'), { headers: { Authorization: 'Bearer ' + key, Accept: 'application/json' } }, 15000);
+    var r = await httpFor(P)(P.listUrl || (P.base + '/models'), { headers: authHeaders(P, key) }, 15000);
     var d = await r.json(), arr = Array.isArray(d) ? d : d && Array.isArray(d.data) ? d.data : [];
     if(prov === 'github'){
       var pref = function(id){ return /gpt-5(?!.*nano)|gpt-4\.1(?!-)|gpt-4o(?!-)/.test(id) ? 3 : /gpt-4\.1-mini|gpt-4o-mini|gpt-5.*mini/.test(id) ? 2 : /llama-4|grok|phi-4-multimodal|mistral-medium/.test(id) ? 1 : 0; };
@@ -339,7 +346,7 @@ async function callOai(prov, key, model, parts, useImg){
     var url = 'data:' + p.inlineData.mimeType + ';base64,' + p.inlineData.data;
     return { type: 'image_url', image_url: prov === 'mistral' ? url : { url: url } };
   }) : partsToText(parts);
-  var headers = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key };
+  var headers = authHeaders(OAI[prov], key, { 'Content-Type': 'application/json' });
   if(prov === 'openrouter') headers['X-Title'] = 'InfoDa';
   tick(OAI[prov].name + ' ' + model);
   var r = await httpFor(OAI[prov])(OAI[prov].base + '/chat/completions', {
