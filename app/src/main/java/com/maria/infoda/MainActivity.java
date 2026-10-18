@@ -31,7 +31,7 @@ public class MainActivity extends Activity {
         "document.body.appendChild(hz);" +
 
         "document.getElementById('btn-cfg').onclick = function(){" +
-        "  var k = prompt('1. API Ключ (sk-... от DeepSeek ИЛИ AIza... от Gemini для картинок):', localStorage.getItem('ai_key') || '');" +
+        "  var k = prompt('1. API-ключ (sk-... = DeepSeek, только текст; AIza... / AQ. ... = Gemini, текст + картинки):', localStorage.getItem('ai_key') || '');" +
         "  if(k !== null) localStorage.setItem('ai_key', k.trim());" +
         "  var p = prompt('2. Адрес твоего воркера Cloudflare:', localStorage.getItem('ai_proxy') || DEFAULT_PROXY);" +
         "  if(p !== null) localStorage.setItem('ai_proxy', p.trim().replace(/\\/$/, ''));" +
@@ -51,11 +51,43 @@ public class MainActivity extends Activity {
         "  } catch(e){ return null; }" +
         "}" +
 
+        /* Достаём текст из ответа воркера. Основной формат: {ok:true,text:'...'}; старые форматы читаются только с проверками */
+        "function pickText(d){" +
+        "  if(!d || typeof d !== 'object') return '';" +
+        "  if(typeof d.text === 'string') return d.text;" +
+        "  var c = Array.isArray(d.candidates) ? d.candidates[0] : null;" +
+        "  var p = c && c.content && Array.isArray(c.content.parts) ? c.content.parts : [];" +
+        "  var t = p.map(function(x){ return x && typeof x.text === 'string' && !x.thought ? x.text : ''; }).join('');" +
+        "  if(t) return t;" +
+        "  var ch = Array.isArray(d.choices) ? d.choices[0] : null;" +
+        "  return ch && ch.message && typeof ch.message.content === 'string' ? ch.message.content : '';" +
+        "}" +
+
+        "function pickError(d){" +
+        "  if(!d || typeof d !== 'object') return '';" +
+        "  var e = d.error;" +
+        "  if(!e) return '';" +
+        "  if(typeof e === 'string') return e;" +
+        "  return e.message ? String(e.message) : JSON.stringify(e);" +
+        "}" +
+
+        /* Разбор JSON от модели: срезаем ```json-обёртки и лишний текст вокруг объекта */
+        "function parseLoose(t){" +
+        "  t = String(t || '').replace(/```json/gi, '').replace(/```/g, '').trim();" +
+        "  try { return JSON.parse(t); } catch(e){}" +
+        "  var a = t.indexOf('{'), b = t.lastIndexOf('}');" +
+        "  if(a >= 0 && b > a){ try { return JSON.parse(t.slice(a, b + 1)); } catch(e){} }" +
+        "  return null;" +
+        "}" +
+
+        "function clean(s){ return String(s || '').replace(/\\s+/g, ' ').trim(); }" +
+
         "async function runAI(mode){" +
-        "  var key = localStorage.getItem('ai_key');" +
-        "  if(!key){ document.getElementById('btn-cfg').click(); key = localStorage.getItem('ai_key'); if(!key) return; }" +
+        "  var key = (localStorage.getItem('ai_key') || '').trim();" +
+        "  if(!key){ document.getElementById('btn-cfg').click(); key = (localStorage.getItem('ai_key') || '').trim(); if(!key) return; }" +
         "  var proxy = localStorage.getItem('ai_proxy') || DEFAULT_PROXY;" +
-        "  var isGemini = key.indexOf('AIza') === 0;" +
+        /* sk- = DeepSeek (только текст), всё остальное (AIza..., AQ. ...) = Gemini (текст + картинки) */
+        "  var isDeepSeek = key.indexOf('sk-') === 0;" +
 
         "  var btn = mode === 'auto' ? document.getElementById('btn-auto') : document.getElementById('btn-dots');" +
         "  var orig = btn.textContent; btn.textContent = '…';" +
@@ -64,65 +96,63 @@ public class MainActivity extends Activity {
         "  var qBlocks = document.querySelectorAll('.que');" +
         "  if(!qBlocks.length){ alert('На этой странице не найдено вопросов (.que)'); btn.textContent = orig; return; }" +
 
-        "  var geminiParts = [{ text: 'Ты решаешь тест по математике/теории вероятностей в Moodle. Для каждого вопроса выбери правильные id вариантов. Если inputType=radio — ровно один id, если checkbox — все верные id. Верни ТОЛЬКО JSON формата: {\"results\":[{\"questionIndex\":0,\"correctIds\":[\"q0_opt0\"]}]}\\n' }];" +
-        "  var dsQuestions = [];" +
+        "  var parts = [{ text: 'Вопросы теста Moodle. У каждого варианта указан его id и inputType. Картинки после текста — это формулы к соответствующему вопросу или варианту.\\n' }];" +
+        "  var optCount = 0;" +
+
+        "  function addImages(el, label){" +
+        "    el.querySelectorAll('img').forEach(function(im){" +
+        "      var b64 = isDeepSeek ? null : imgToB64(im);" +
+        "      if(b64){ parts.push({ text: label + ':' }); parts.push({ inlineData: { mimeType: 'image/png', data: b64 } }); }" +
+        "      else parts.push({ text: label + ': [картинка-формула ' + clean(im.alt || (im.src || '').split('/').pop()) + ']' });" +
+        "    });" +
+        "  }" +
 
         "  qBlocks.forEach(function(q, qi){" +
         "    var qEl = q.querySelector('.qtext') || q;" +
-        "    var qText = qEl.innerText.replace(/\\s+/g, ' ').trim();" +
-        "    geminiParts.push({ text: '\\n=== Вопрос ' + qi + ': ' + qText + ' ===\\n' });" +
-        "    qEl.querySelectorAll('img').forEach(function(im){" +
-        "      var b64 = isGemini ? imgToB64(im) : null;" +
-        "      if(b64) geminiParts.push({ inlineData: { mimeType: 'image/png', data: b64 } });" +
-        "      else qText += ' [Формула-картинка: ' + im.src.split('/').pop() + ']';" +
-        "    });" +
-
-        "    var opts = [];" +
+        "    parts.push({ text: '\\n=== Вопрос ' + qi + ' ===\\n' + clean(qEl.innerText) });" +
+        "    addImages(qEl, 'Формула к вопросу ' + qi);" +
         "    q.querySelectorAll('.answer .r0, .answer .r1').forEach(function(row, oi){" +
         "      var inp = row.querySelector('input[type=\"radio\"], input[type=\"checkbox\"]');" +
         "      if(!inp) return;" +
         "      var id = 'q' + qi + '_opt' + oi;" +
         "      inp.setAttribute('data-ai-id', id);" +
         "      var lbl = row.querySelector('[data-region=\"answer-label\"]') || row;" +
-        "      var oText = lbl.innerText.replace(/\\s+/g, ' ').trim();" +
-        "      geminiParts.push({ text: 'Вариант ' + id + ' (' + inp.type + '): ' + oText });" +
-        "      lbl.querySelectorAll('img').forEach(function(im){" +
-        "        var b64 = isGemini ? imgToB64(im) : null;" +
-        "        if(b64) geminiParts.push({ inlineData: { mimeType: 'image/png', data: b64 } });" +
-        "        else oText += ' [Картинка формулы]';" +
-        "      });" +
-        "      opts.push({ id: id, inputType: inp.type, text: oText });" +
+        "      parts.push({ text: 'Вариант ' + id + ' (inputType=' + inp.type + '): ' + clean(lbl.innerText) });" +
+        "      addImages(lbl, 'Формула варианта ' + id);" +
+        "      optCount++;" +
         "    });" +
-        "    dsQuestions.push({ questionIndex: qi, question: qText, options: opts });" +
         "  });" +
+        "  if(!optCount){ alert('Не найдено вариантов ответа (radio/checkbox) в вопросах'); btn.textContent = orig; return; }" +
 
         "  try {" +
-        "    var bodyObj = isGemini ? " +
-        "      { contents: [{ parts: geminiParts }], generationConfig: { responseMimeType: 'application/json', temperature: 0.1 } } :" +
-        "      { model: 'deepseek-chat', messages: [{ role: 'system', content: 'Реши тест Moodle. Верни ТОЛЬКО JSON: {\"results\":[{\"questionIndex\":0,\"correctIds\":[\"q0_opt0\"]}]}' }, { role: 'user', content: JSON.stringify(dsQuestions) }], response_format: { type: 'json_object' }, temperature: 0.1 };" +
-
         "    var resp = await fetch(proxy + '?key=' + encodeURIComponent(key), {" +
         "      method: 'POST'," +
         "      headers: { 'Content-Type': 'text/plain;charset=utf-8' }," +
-        "      body: JSON.stringify(bodyObj)" +
+        "      body: JSON.stringify({ parts: parts })" +
         "    });" +
 
-        "    var data = await resp.json();" +
-        "    if(!resp.ok || data.error){" +
-        "      var msg = (data.error && data.error.message) ? data.error.message : JSON.stringify(data);" +
-        "      throw new Error(msg);" +
+        "    var rawResp = await resp.text();" +
+        "    var data = null;" +
+        "    try { data = JSON.parse(rawResp); } catch(e){}" +
+        "    if(!data) throw new Error('Прокси вернул не JSON (HTTP ' + resp.status + '): ' + rawResp.slice(0, 400));" +
+        "    if(!resp.ok || data.ok === false || pickError(data)){" +
+        "      throw new Error(pickError(data) || ('HTTP ' + resp.status + ': ' + rawResp.slice(0, 400)));" +
         "    }" +
 
-        "    var raw = isGemini ? data.candidates[0].content.parts[0].text : data.choices[0].message.content;" +
-        "    raw = raw.replace(/```json/g, '').replace(/```/g, '').trim();" +
-        "    var parsed = JSON.parse(raw);" +
-        "    var list = parsed.results || parsed.answers || [];" +
+        "    var text = pickText(data);" +
+        "    if(!text) throw new Error('В ответе сервера нет текста: ' + rawResp.slice(0, 400));" +
+        "    var parsed = parseLoose(text);" +
+        "    if(!parsed) throw new Error('Модель вернула не JSON: ' + text.slice(0, 400));" +
+        "    var list = Array.isArray(parsed) ? parsed : Array.isArray(parsed.results) ? parsed.results : Array.isArray(parsed.answers) ? parsed.answers : [];" +
 
+        "    var marked = 0;" +
         "    list.forEach(function(r){" +
-        "      var cIds = r.correctIds || [];" +
+        "      if(!r) return;" +
+        "      var cIds = Array.isArray(r.correctIds) ? r.correctIds : (r.correctIds ? [r.correctIds] : []);" +
         "      cIds.forEach(function(id){" +
-        "        var inp = document.querySelector('[data-ai-id=\"' + id + '\"]');" +
+        "        var inp = document.querySelector('[data-ai-id=\"' + String(id).replace(/[^\\w-]/g, '') + '\"]');" +
         "        if(!inp) return;" +
+        "        marked++;" +
         "        var row = inp.closest('.r0, .r1') || inp.parentElement;" +
         "        if(mode === 'auto'){" +
         "          if(inp.disabled) row.style.outline = '1px dashed #30d158';" +
@@ -135,11 +165,12 @@ public class MainActivity extends Activity {
         "        }" +
         "      });" +
         "    });" +
+        "    if(!marked) throw new Error('ИИ не указал ни одного известного варианта. Ответ: ' + text.slice(0, 400));" +
 
         "    btn.textContent = '✓';" +
         "    setTimeout(function(){ btn.textContent = orig; }, 1800);" +
         "  } catch(e){" +
-        "    alert('Ошибка: ' + e.message);" +
+        "    alert('Ошибка: ' + ((e && e.message) ? e.message : String(e)));" +
         "    btn.textContent = '✕';" +
         "    setTimeout(function(){ btn.textContent = orig; }, 2000);" +
         "  }" +
