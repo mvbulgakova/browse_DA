@@ -108,7 +108,7 @@ public class MainActivity extends Activity {
         });
 
         // Сюда можно сразу прописать адрес твоего ИнфоДа, чтобы при запуске открывался он
-        webView.loadUrl("https://moodle.tspu.edu.ru"); // или точная ссылка на твой вуз
+        webView.loadUrl("https://www.google.com"); // или точная ссылка на твой вуз
     }
 
     @Override
