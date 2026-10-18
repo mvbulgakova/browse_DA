@@ -19,7 +19,11 @@ var lt = 0; hz.ontouchend = function(){ var n=Date.now(); if(n-lt<350) bar.style
 document.body.appendChild(hz);
 document.getElementById('btn-cfg').onclick = function(){
   var k = prompt('1. API-ключи через запятую, пробуются по очереди.\nGemini: AIza…/AQ.…  Groq: gsk_…  OpenRouter: sk-or-…  Mistral: mstrl_… или 32 символа  Cerebras: csk-…  DeepSeek: sk-…', loadKeyString());
-  if(k !== null) saveKeyString(k.trim());
+  if(k !== null){
+    var changed = k.trim() !== loadKeyString();
+    saveKeyString(k.trim());
+    if(changed && k.trim()) checkKeys(getKeys());
+  }
   var p = prompt('2. Адрес твоего воркера Cloudflare:', localStorage.getItem('ai_proxy') || DEFAULT_PROXY);
   if(p !== null) localStorage.setItem('ai_proxy', p.trim().replace(/\/$/, ''));
 };
@@ -172,6 +176,27 @@ async function callGemini(key, model, parts){
   return { status: r.status, text: text, error: err };
 }
 
+// Проверка ключей после сохранения: показывает, какие ключи рабочие и сколько моделей видят картинки
+async function checkKeys(keys){
+  var lines = [];
+  for(var i = 0; i < keys.length; i++){
+    var key = keys[i], prov = provider(key), name = { gemini: 'Gemini', deepseek: 'DeepSeek' }[prov] || OAI[prov].name;
+    var head = name + ' …' + keyTag(key) + ': ';
+    try {
+      if(prov === 'deepseek'){ lines.push(head + 'проверяется только при запросе (через воркер)'); continue; }
+      var url = prov === 'gemini' ? 'https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000&key=' + encodeURIComponent(key) : OAI[prov].base + '/models';
+      var r = await fetch(url, prov === 'gemini' ? {} : { headers: { Authorization: 'Bearer ' + key } });
+      var raw = await r.text(), d = null;
+      try { d = JSON.parse(raw); } catch(e){}
+      if(!r.ok){ lines.push(head + '✕ ' + (pickError(d) || ('HTTP ' + r.status + ' ' + short(raw)))); continue; }
+      ['ai_models_' + keyTag(key), 'ai_models_' + prov + keyTag(key)].forEach(function(k){ try { localStorage.removeItem(k); } catch(e){} });
+      var list = prov === 'gemini' ? await getModels(key) : await getOaiModels(prov, key);
+      var vis = prov === 'gemini' ? list.length : list.filter(function(m){ return m.vision; }).length;
+      lines.push(head + '✓ моделей: ' + list.length + ', видят картинки: ' + vis);
+    } catch(e){ lines.push(head + '✕ сеть: ' + short(e.message)); }
+  }
+  alert('Проверка ключей:\n' + lines.join('\n'));
+}
 // Тип ключа по префиксу
 function provider(key){
   if(/^(AIza|AQ\.)/.test(key)) return 'gemini';
@@ -222,7 +247,9 @@ function partsToText(parts){
 }
 async function callOai(prov, key, model, parts, useImg){
   var content = useImg ? parts.map(function(p){
-    return p.inlineData ? { type: 'image_url', image_url: { url: 'data:' + p.inlineData.mimeType + ';base64,' + p.inlineData.data } } : { type: 'text', text: p.text };
+    if(!p.inlineData) return { type: 'text', text: p.text };
+    var url = 'data:' + p.inlineData.mimeType + ';base64,' + p.inlineData.data;
+    return { type: 'image_url', image_url: prov === 'mistral' ? url : { url: url } };
   }) : partsToText(parts);
   var headers = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key };
   if(prov === 'openrouter') headers['X-Title'] = 'InfoDa';
@@ -237,21 +264,25 @@ async function callOai(prov, key, model, parts, useImg){
   if(!err && !text) err = 'пустой ответ';
   return { status: r.status, text: text, error: err };
 }
-async function askOai(prov, key, parts){
+async function askOai(prov, key, parts, accept){
   var P = OAI[prov], tag = keyTag(key), list = await getOaiModels(prov, key);
   var hasImg = parts.some(function(p){ return p.inlineData; });
-  var tries = 0, limited = [], other = [];
+  var tries = 0, limited = [], other = [], blind = 0;
   for(var i = 0; i < list.length && tries < 6; i++){
     var m = list[i];
+    // Формулы в картинках: модель без зрения только угадывает — такие не используем
+    if(hasImg && !m.vision){ blind++; continue; }
     if(isBlocked(tag, m.id)){ limited.push(m.id); continue; }
     tries++;
-    var useImg = hasImg && !!m.vision, r;
-    try {
-      r = await callOai(prov, key, m.id, parts, useImg);
-      // Модель не принимает картинки — повторяем только с текстом
-      if(!r.text && useImg && r.status === 400 && /image|vision|multimodal|content/i.test(r.error)) r = await callOai(prov, key, m.id, parts, false);
-    } catch(e){ other.push('сеть: ' + short(e.message)); break; }
-    if(r.text) return { text: r.text, model: P.name + ' ' + m.id };
+    var r;
+    try { r = await callOai(prov, key, m.id, parts, hasImg); }
+    catch(e){ other.push('сеть: ' + short(e.message)); break; }
+    if(r.text){
+      if(accept(r.text)) return { text: r.text, model: P.name + ' ' + m.id };
+      other.push(m.id + ': не выбрала ни одного варианта');
+      continue;
+    }
+    if(hasImg && r.status === 400 && /image|vision|multimodal/i.test(r.error)){ block(tag, m.id, '', 7 * 86400e3); continue; }
     var msg = r.error;
     if(/free-models-per-day/i.test(msg)){ block(tag, '*', '', 6 * 3600e3); limited.push('дневной лимит бесплатных моделей'); break; }
     if(r.status === 429 || /quota|rate limit|exhausted/i.test(msg)){ block(tag, m.id, msg); limited.push(m.id); continue; }
@@ -262,20 +293,28 @@ async function askOai(prov, key, parts){
   var line = '';
   if(limited.length) line += 'лимиты исчерпаны (' + limited.join(', ') + ')';
   if(other.length) line += (line ? '; ' : '') + other.join('; ');
+  if(!line && blind) line = 'нет моделей, которые видят картинки-формулы';
   throw new Error(line || 'нет доступных моделей');
 }
 
-async function askAI(keys, parts){
+// Порядок провайдеров: сначала те, что лучше всего читают формулы-картинки
+var PROVIDER_ORDER = { gemini: 0, mistral: 1, openrouter: 2, groq: 3, cerebras: 4, deepseek: 5 };
+async function askAI(keys, parts, accept){
   var errors = [];
+  keys = keys.slice().sort(function(a, b){ return PROVIDER_ORDER[provider(a)] - PROVIDER_ORDER[provider(b)]; });
   for(var ki = 0; ki < keys.length; ki++){
     var key = keys[ki], tag = keyTag(key), name = 'Ключ …' + tag, prov = provider(key);
     if(prov === 'deepseek'){
-      try { return await callProxy(key, parts); } catch(e){ errors.push(name + ' (DeepSeek): ' + short(e.message)); }
+      try {
+        var ds = await callProxy(key, parts);
+        if(accept(ds.text)) return ds;
+        errors.push(name + ' (DeepSeek): не выбрала ни одного варианта');
+      } catch(e){ errors.push(name + ' (DeepSeek): ' + short(e.message)); }
       continue;
     }
     if(isBlocked(tag, '*')){ errors.push(name + ': временно пропущен (ключ не принят или дневной лимит)'); continue; }
     if(OAI[prov]){
-      try { return await askOai(prov, key, parts); } catch(e){ errors.push(name + ' (' + OAI[prov].name + '): ' + short(e.message)); }
+      try { return await askOai(prov, key, parts, accept); } catch(e){ errors.push(name + ' (' + OAI[prov].name + '): ' + short(e.message)); }
       continue;
     }
     var models = await getModels(key), tries = 0, limited = [], other = [];
@@ -290,7 +329,11 @@ async function askAI(keys, parts){
         try { return await callProxy(key, parts); } catch(e2){ other.push(short(e2.message)); }
         break;
       }
-      if(r.text) return { text: r.text, model: model };
+      if(r.text){
+        if(accept(r.text)) return { text: r.text, model: model };
+        other.push(model + ': не выбрала ни одного варианта');
+        continue;
+      }
       var msg = r.error;
       if(r.status === 429 || /quota|exhausted|rate limit/i.test(msg)){ block(tag, model, msg); limited.push(model); continue; }
       if(r.status === 404 || /not found|deprecat|no longer|not supported|update your code/i.test(msg)){ block(tag, model, '', 86400e3); continue; }
@@ -308,7 +351,9 @@ async function askAI(keys, parts){
 
 var INSTRUCTION = 'Ты решаешь тест Moodle (математика, теория вероятностей и др.). Для каждого вопроса выбери id правильных вариантов. ' +
   'Если inputType=radio — ровно один id, если checkbox — все верные id. Картинки после текста — формулы к соответствующему вопросу или варианту. ' +
-  'Верни ТОЛЬКО JSON без пояснений: {"results":[{"questionIndex":0,"correctIds":["q0_opt0"]}]}\n';
+  'Внимательно прочитай формулы на картинках. Сначала кратко реши каждый вопрос (поле solution: 1–3 строки вычислений), затем сверь результат с вариантами. ' +
+  'correctIds никогда не оставляй пустым — если не уверена, выбери наиболее вероятный вариант. ' +
+  'Верни ТОЛЬКО JSON: {"results":[{"questionIndex":0,"solution":"...","correctIds":["q0_opt0"]}]}\n';
 
 async function runAI(mode){
   var keys = getKeys();
@@ -352,7 +397,11 @@ async function runAI(mode){
     var ck = hash(JSON.stringify(parts));
     var cache = lsGet('ai_cache', {});
     var hit = cache[ck];
-    var res = hit ? { text: hit.text, model: hit.model + ' (кэш)' } : await askAI(keys, parts);
+    var accept = function(t){
+      var pj = parseLoose(t), arr = !pj ? [] : Array.isArray(pj) ? pj : Array.isArray(pj.results) ? pj.results : Array.isArray(pj.answers) ? pj.answers : [];
+      return arr.some(function(r){ var c = r && (Array.isArray(r.correctIds) ? r.correctIds : r.correctIds ? [r.correctIds] : []); return c.some(function(id){ return !!document.querySelector('[data-ai-id="' + String(id).replace(/[^\w-]/g, '') + '"]'); }); });
+    };
+    var res = hit ? { text: hit.text, model: hit.model + ' (кэш)' } : await askAI(keys, parts, accept);
     var text = res.text;
     var parsed = parseLoose(text);
     if(!parsed) throw new Error('Модель ' + res.model + ' вернула не JSON: ' + short(text));
