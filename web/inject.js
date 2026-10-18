@@ -20,9 +20,8 @@ document.body.appendChild(hz);
 document.getElementById('btn-cfg').onclick = function(){
   var k = prompt('1. API-ключи через запятую, пробуются по очереди.\nGemini: AIza…/AQ.…  Groq: gsk_…  OpenRouter: sk-or-…  Mistral: mstrl_… или 32 символа  Cerebras: csk-…  DeepSeek: sk-…', loadKeyString());
   if(k !== null){
-    var changed = k.trim() !== loadKeyString();
     saveKeyString(k.trim());
-    if(changed && k.trim()) checkKeys(getKeys());
+    if(k.trim()) checkKeys(getKeys());
   }
   var p = prompt('2. Адрес твоего воркера Cloudflare:', localStorage.getItem('ai_proxy') || DEFAULT_PROXY);
   if(p !== null) localStorage.setItem('ai_proxy', p.trim().replace(/\/$/, ''));
