@@ -10,8 +10,27 @@ android {
         applicationId "com.maria.infoda"
         minSdk 24
         targetSdk 34
-        versionCode 1
-        versionName "1.0"
+        // Номер сборки GitHub Actions — каждая новая версия ставится поверх старой
+        versionCode((System.getenv("GITHUB_RUN_NUMBER") ?: "1") as int)
+        versionName "1.0." + (System.getenv("GITHUB_RUN_NUMBER") ?: "0")
+    }
+    // Постоянный ключ подписи: без него каждая облачная сборка подписана новым ключом
+    // и Android требует удалить старое приложение перед установкой
+    signingConfigs {
+        fixed {
+            storeFile file('infoda.keystore')
+            storePassword 'infoda123'
+            keyAlias 'infoda'
+            keyPassword 'infoda123'
+        }
+    }
+    buildTypes {
+        debug { signingConfig signingConfigs.fixed }
+        release { signingConfig signingConfigs.fixed }
+    }
+    sourceSets {
+        // web/inject.js встраивается в APK как запасная копия скрипта
+        main { assets.srcDirs += ['../web'] }
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
